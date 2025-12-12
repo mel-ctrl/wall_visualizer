@@ -1,0 +1,21 @@
+[WALL]
+length_mm = 2300
+height_mm = 2000
+
+[FULL_BRICK]
+length_mm = 210
+height_mm = 50
+width_mm = 100
+
+[HALF_BRICK]
+length_mm = 100
+height_mm = 50
+width_mm = 100
+
+[JOINT_SIZE]
+head_mm = 10
+bed_mm = 12.5
+
+[ENVELOPE]
+length_mm = 800
+height_mm = 1300
