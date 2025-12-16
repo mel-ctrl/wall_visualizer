@@ -1,6 +1,37 @@
 from enum import Enum, StrEnum
 from dataclasses import dataclass
 
+
+class Color:
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
+    CYAN = '\033[96m'
+    ORANGE = '\033[38;5;208m'
+    PURPLE = '\033[38;5;129m'
+    PINK = '\033[38;5;213m'
+    RESET = '\033[0m'
+    GRAY = '\033[90m'
+    RESET = '\033[0m'
+
+    @staticmethod
+    def GetStrideColor(stride_id: int) -> str:
+        colors = [
+            Color.RED,
+            Color.GREEN, 
+            Color.BLUE,
+            Color.YELLOW,
+            Color.MAGENTA,
+            Color.CYAN,
+            Color.ORANGE,
+            Color.PURPLE,
+            Color.PINK,
+        ]
+        return colors[stride_id % len(colors)]
+
+
 class BrickType(StrEnum):
     FULL = "FULL"
     HALF = "HALF"
@@ -12,34 +43,48 @@ class BondType(StrEnum):
 
 @dataclass(frozen=True)
 class Coordinate:
-    row: int
-    column: int
+    row: int = 0
+    column: int = 0
+
+    def __hash__(self):
+        return hash((self.row, self.column))
+@dataclass
+class Position:
+    x: float = 0.0
+    y: float = 0.0
 
 @dataclass
 class Brick:
     coordinate: Coordinate
+    position: Position
     brickType: BrickType
+    strideId: int = 0
 
 @dataclass
 class BrickDimension:
-    length: int
-    height: int
-    width: int
+    length: int = 0
+    height: int = 0
+    width: int = 0
 
 @dataclass
 class RobotEnvelope:
-    length: int
-    height: int
+    length: int = 0
+    height: int = 0
 
 @dataclass
 class JointSize:
-    head: int
-    bed: int
+    head: int = 0
+    bed: int = 0
 
 @dataclass
 class Wall:
-    length: int
-    height: int
+    length: int = 0
+    height: int = 0
+
+@dataclass
+class Action:
+    move: Coordinate
+    build: Brick 
 
 @dataclass
 class Config:
@@ -60,4 +105,6 @@ class Config:
 
     @property
     def halfBrickWithJointLength(self):
-        return self.halfBrickDimension.length
+        return self.halfBrickDimension.length + self.jointSize.head
+
+
