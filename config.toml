@@ -1,6 +1,6 @@
 [WALL]
-length_mm = 1000 #2300
-height_mm = 1000 #2000
+length_mm = 2300 # 2300
+height_mm = 2000 # 2000
 
 [FULL_BRICK]
 length_mm = 210
