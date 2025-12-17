@@ -46,12 +46,13 @@ class Coordinate:
     row: int = 0
     column: int = 0
 
-    def __hash__(self):
-        return hash((self.row, self.column))
-@dataclass
+    def __eq__(self, other):
+        return self.row == other.row and self.column == other.column
+
+@dataclass(frozen=True)
 class Position:
-    x: float = 0.0
-    y: float = 0.0
+    x: int = 0
+    y: int = 0
 
 @dataclass
 class Brick:
@@ -106,5 +107,13 @@ class Config:
     @property
     def halfBrickWithJointLength(self):
         return self.halfBrickDimension.length + self.jointSize.head
+    
+    @property
+    def fullBrickArea(self):
+        return self.fullBrickDimension.length * self.fullBrickDimension.height
+    
+    @property
+    def halfBrickArea(self):
+        return self.halfBrickDimension.length * self.halfBrickDimension.height
 
 
