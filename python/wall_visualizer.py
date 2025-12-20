@@ -271,7 +271,6 @@ class WallVisualizer:
             if new_pos == current_node.state.robotPosition:
                 continue
 
-            '''
             pos_key = (new_pos.x, new_pos.y)
             reachable_from_new_pos = self.reachabilityCache[pos_key]
             
@@ -285,7 +284,7 @@ class WallVisualizer:
             
             if not could_place_any_brick:
                 continue
-            '''
+
             new_state = State(
                 robotPosition=new_pos,
                 placedBricks=current_node.state.placedBricks,
