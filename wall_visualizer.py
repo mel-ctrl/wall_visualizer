@@ -3,7 +3,7 @@ import tomllib
 import argparse
 import wall_visualizer_types as types
 from typing import Dict, List, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import cProfile
 import pstats
 from pstats import SortKey
@@ -23,18 +23,25 @@ class State:
     robotPosition: types.Position
     placedBricks: int = 0
 
+    _hash_cache: int = field(default=None, init=False, compare=False, hash=False)
+
     def __hash__(self):
-        return hash((self.robotPosition.x, self.robotPosition.y, self.placedBricks))
+        if object.__getattribute__(self, '_hash_cache') is None:
+            h = hash((self.robotPosition.x, self.robotPosition.y, self.placedBricks))
+            object.__setattr__(self, '_hash_cache', h)
+            return h
+        return object.__getattribute__(self, '_hash_cache')
     
     def __eq__(self, other):
         return (self.robotPosition.x == other.robotPosition.x and 
                 self.robotPosition.y == other.robotPosition.y and 
                 self.placedBricks == other.placedBricks)
+
     
 @dataclass
 class Node:
-    cost: int
-    estimatedTotalCost: int # this is for A* f(n) = g(n) + h(n)
+    cost: float
+    estimatedTotalCost: float # this is for A* f(n) = g(n) + h(n)
     state: State
     currentStrideId: int
     brickHistory: List[types.Brick]
@@ -134,7 +141,7 @@ class WallVisualizer:
         if not success:
             print("Failed to find valid build order!")
             return
-
+        '''
         print(f"Optimal strategy found: total cost = {self.totalCost}, strides = {self.totalStrides}")
         print("Press ENTER to place next brick, 'q' to quit")
 
@@ -151,7 +158,7 @@ class WallVisualizer:
         
         user_input = input(f"\nPress ENTER to end program")
         '''
-        '''
+
     def _CreateLayout(self, bond_type: types.BondType) -> None:
         match(bond_type):
             case types.BondType.STRETCHER:
@@ -264,30 +271,28 @@ class WallVisualizer:
             if new_pos == current_node.state.robotPosition:
                 continue
 
+            '''
             pos_key = (new_pos.x, new_pos.y)
             reachable_from_new_pos = self.reachabilityCache[pos_key]
             
-            new_remaining_area = current_node.remainingArea
+            could_place_any_brick = False
             for coordinate in reachable_from_new_pos:
                 brick_index = self.brickToIndex[coordinate]
                 if not ((current_node.state.placedBricks >> brick_index) & 1):
                     if self._IsBrickFullySupported(coordinate, current_node.state.placedBricks):
-                        design_brick = self.wall[coordinate.row][coordinate.column]
-                        new_remaining_area -= (self.config.fullBrickArea if design_brick.brickType == types.BrickType.FULL else self.config.halfBrickArea)
+                        could_place_any_brick = True
+                        break
             
-            new_remaining_area = max(0, new_remaining_area)
-            
-            #Check if could place any brick from this position
-            if new_remaining_area == current_node.remainingArea:
+            if not could_place_any_brick:
                 continue
-
+            '''
             new_state = State(
                 robotPosition=new_pos,
                 placedBricks=current_node.state.placedBricks,
             )
 
-            new_cost = current_node.cost + 1
-            newEstimatedTotalCost = new_cost + self._CalculateHeuristic(new_remaining_area)
+            new_cost = current_node.cost + 1.0
+            newEstimatedTotalCost = new_cost + self._CalculateHeuristic(current_node.remainingArea)
 
             yield Node(
                 cost=new_cost,
@@ -298,8 +303,8 @@ class WallVisualizer:
                 remainingArea=current_node.remainingArea
             )
 
-    def _CalculateHeuristic(self, remaining_area):
-        return remaining_area // (self.config.envelope.length * self.config.envelope.height)
+    def _CalculateHeuristic(self, remaining_area) -> float:
+        return remaining_area / (self.config.envelope.length * self.config.envelope.height)
     
     def _GetAllPossibleRobotPositions(self) -> List[types.Position]:
         positions = []
