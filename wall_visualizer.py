@@ -134,7 +134,7 @@ class WallVisualizer:
         if not success:
             print("Failed to find valid build order!")
             return
-        '''
+
         print(f"Optimal strategy found: total cost = {self.totalCost}, strides = {self.totalStrides}")
         print("Press ENTER to place next brick, 'q' to quit")
 
@@ -150,6 +150,7 @@ class WallVisualizer:
                 self._Visualize(builtBricks)
         
         user_input = input(f"\nPress ENTER to end program")
+        '''
         '''
     def _CreateLayout(self, bond_type: types.BondType) -> None:
         match(bond_type):
@@ -168,19 +169,19 @@ class WallVisualizer:
         # Create cache of reachable bricks from each robot coordinate
         for position in all_positions:
             self._CalculateReachableBricks(position)
-        
+        # Create cache of support dependencies for each brick in design wall
         self._PrecomputeSupportDependencies()
         
         print(f"Total robot positions: {len(all_positions)}")
         print(f"Total bricks: {self.totalBricks}")
         print(f"Total wall area: {self.totalWallArea}")
         
-        priority_queue = []
 
         starting_state = State(robotPosition=types.Position(0, 0), placedBricks=0)
-        
+
         gScores: Dict = {starting_state: 0}
 
+        priority_queue = []
         heapq.heappush(priority_queue, Node(cost=0,
                                             estimatedTotalCost=0+self._CalculateHeuristic(self.totalWallArea),
                                             state=starting_state, 
@@ -205,96 +206,97 @@ class WallVisualizer:
                 continue
             
             nr_of_bricks_placed = bin(current_node.state.placedBricks).count('1')
-            
             if nr_of_bricks_placed == self.totalBricks:
                 self.buildOrder = current_node.brickHistory
                 self.totalCost = current_node.cost
                 self.totalStrides = current_node.currentStrideId
                 return True
 
-            pos_key = (current_node.state.robotPosition.x, current_node.state.robotPosition.y)
-            reachable_coords = self.reachabilityCache[pos_key]
-            
-            for coordinate in reachable_coords:
-                brick_index = self.brickToIndex[coordinate]
-                
-                # Check if already placed
-                if (current_node.state.placedBricks >> brick_index) & 1:
-                    continue
+            neighbors = list(self._GenerateBrickPlacementNeighbors(current_node)) + list(self._GenerateMovementNeighbors(current_node, all_positions))
 
-                new_placed = current_node.state.placedBricks | (1 << brick_index)
-            
-                new_state = State(
-                robotPosition=current_node.state.robotPosition,
-                placedBricks=new_placed
-                )
-                
-                if not self._IsBrickFullySupported(coordinate, current_node.state.placedBricks):
-                    continue
-
-                new_cost = current_node.cost
-                if new_state not in gScores or new_cost < gScores[new_state]:
-                    gScores[new_state] = new_cost
-
-                    design_brick = self.wall[coordinate.row][coordinate.column]
-                    new_remaining_area = current_node.remainingArea - (self.config.fullBrickArea if design_brick.brickType == types.BrickType.FULL else self.config.halfBrickArea)
-                    newEstimatedTotalCost = new_cost + self._CalculateHeuristic(new_remaining_area)
-
-                    new_node = Node(
-                        cost=new_cost,
-                        estimatedTotalCost=newEstimatedTotalCost,
-                        state=new_state,
-                        currentStrideId=current_node.currentStrideId,
-                        brickHistory=current_node.brickHistory + [
-                            types.Brick(coordinate, design_brick.position, design_brick.brickType, current_node.currentStrideId)
-                        ],
-                        remainingArea=new_remaining_area
-                    )
-
-                    heapq.heappush(priority_queue, new_node)
-
-            for new_pos in all_positions:
-                if new_pos == current_node.state.robotPosition:
-                    continue
-                
-                new_state = State(
-                    robotPosition=new_pos,
-                    placedBricks=current_node.state.placedBricks,
-                )
-
-                pos_key = (new_pos.x, new_pos.y)
-                reachable_from_new_pos = self.reachabilityCache[pos_key]
-                
-                new_remaining_area = current_node.remainingArea
-                for coordinate in reachable_from_new_pos:
-                    brick_index = self.brickToIndex[coordinate]
-                    if not ((current_node.state.placedBricks >> brick_index) & 1):
-                        if self._IsBrickFullySupported(coordinate, current_node.state.placedBricks):
-                            design_brick = self.wall[coordinate.row][coordinate.column]
-                            new_remaining_area -= (self.config.fullBrickArea if design_brick.brickType == types.BrickType.FULL else self.config.halfBrickArea)
-                
-                #Check if could place any brick from this position
-                if new_remaining_area == current_node.remainingArea:
-                    continue
-
-                new_cost = current_node.cost + 1
-                if new_state not in gScores or new_cost < gScores[new_state]:
-                    gScores[new_state] = new_cost
-
-                     #fix this: this should be based on how many brick can be build from new position (supported + reachable)
-                    newEstimatedTotalCost = new_cost + self._CalculateHeuristic(new_remaining_area)
-
-                    new_node = Node(
-                        cost=new_cost,
-                        estimatedTotalCost=newEstimatedTotalCost,
-                        state=new_state,
-                        currentStrideId=current_node.currentStrideId + 1,
-                        brickHistory=current_node.brickHistory,
-                        remainingArea=current_node.remainingArea
-                    )
-                    heapq.heappush(priority_queue, new_node)
+            for neighbor in neighbors:
+                 if neighbor.state not in gScores or neighbor.cost < gScores[neighbor.state]:
+                    gScores[neighbor.state] = neighbor.cost
+                    heapq.heappush(priority_queue, neighbor)
 
         return False
+    
+    def _GenerateBrickPlacementNeighbors(self, current_node: Node):
+        pos_key = (current_node.state.robotPosition.x, current_node.state.robotPosition.y)
+        reachable_coords = self.reachabilityCache[pos_key]
+        
+        for coordinate in reachable_coords:
+            brick_index = self.brickToIndex[coordinate]
+            
+            # Check if already placed
+            if (current_node.state.placedBricks >> brick_index) & 1:
+                continue
+            
+            if not self._IsBrickFullySupported(coordinate, current_node.state.placedBricks):
+                continue
+
+            new_placed = current_node.state.placedBricks | (1 << brick_index)
+        
+            new_state = State(
+            robotPosition=current_node.state.robotPosition,
+            placedBricks=new_placed
+            )
+
+            design_brick = self.wall[coordinate.row][coordinate.column]
+            new_remaining_area = max(0, current_node.remainingArea - (self.config.fullBrickArea if design_brick.brickType == types.BrickType.FULL else self.config.halfBrickArea))
+            
+            new_cost = current_node.cost
+            newEstimatedTotalCost = new_cost + self._CalculateHeuristic(new_remaining_area)
+
+            yield Node(
+                cost=new_cost,
+                estimatedTotalCost=newEstimatedTotalCost,
+                state=new_state,
+                currentStrideId=current_node.currentStrideId,
+                brickHistory=current_node.brickHistory + [
+                    types.Brick(coordinate, design_brick.position, design_brick.brickType, current_node.currentStrideId)
+                ],
+                remainingArea=new_remaining_area
+            )
+
+    def _GenerateMovementNeighbors(self, current_node: Node, all_positions: List[types.Position]):
+        for new_pos in all_positions:
+            if new_pos == current_node.state.robotPosition:
+                continue
+
+            pos_key = (new_pos.x, new_pos.y)
+            reachable_from_new_pos = self.reachabilityCache[pos_key]
+            
+            new_remaining_area = current_node.remainingArea
+            for coordinate in reachable_from_new_pos:
+                brick_index = self.brickToIndex[coordinate]
+                if not ((current_node.state.placedBricks >> brick_index) & 1):
+                    if self._IsBrickFullySupported(coordinate, current_node.state.placedBricks):
+                        design_brick = self.wall[coordinate.row][coordinate.column]
+                        new_remaining_area -= (self.config.fullBrickArea if design_brick.brickType == types.BrickType.FULL else self.config.halfBrickArea)
+            
+            new_remaining_area = max(0, new_remaining_area)
+            
+            #Check if could place any brick from this position
+            if new_remaining_area == current_node.remainingArea:
+                continue
+
+            new_state = State(
+                robotPosition=new_pos,
+                placedBricks=current_node.state.placedBricks,
+            )
+
+            new_cost = current_node.cost + 1
+            newEstimatedTotalCost = new_cost + self._CalculateHeuristic(new_remaining_area)
+
+            yield Node(
+                cost=new_cost,
+                estimatedTotalCost=newEstimatedTotalCost,
+                state=new_state,
+                currentStrideId=current_node.currentStrideId + 1,
+                brickHistory=current_node.brickHistory,
+                remainingArea=current_node.remainingArea
+            )
 
     def _CalculateHeuristic(self, remaining_area):
         return remaining_area // (self.config.envelope.length * self.config.envelope.height)
