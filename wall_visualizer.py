@@ -58,6 +58,7 @@ class WallVisualizer:
         self.totalWallArea: int = 0
 
         self.supportDependencies = {}
+        self.supportCheckCache = {}
 
     def LoadConfig(self, file_name) -> types.Config:
         with open(file_name, 'rb') as f:
@@ -264,22 +265,23 @@ class WallVisualizer:
                 pos_key = (new_pos.x, new_pos.y)
                 reachable_from_new_pos = self.reachabilityCache[pos_key]
                 
-                can_place_any = False
+                new_remaining_area = current_node.remainingArea
                 for coordinate in reachable_from_new_pos:
                     brick_index = self.brickToIndex[coordinate]
                     if not ((current_node.state.placedBricks >> brick_index) & 1):
                         if self._IsBrickFullySupported(coordinate, current_node.state.placedBricks):
-                            can_place_any = True
-                            break
+                            design_brick = self.wall[coordinate.row][coordinate.column]
+                            new_remaining_area -= (self.config.fullBrickArea if design_brick.brickType == types.BrickType.FULL else self.config.halfBrickArea)
                 
-                if not can_place_any:
-                    continue 
+                #Check if could place any brick from this position
+                if new_remaining_area == current_node.remainingArea:
+                    continue
 
                 new_cost = current_node.cost + 1
                 if new_state not in gScores or new_cost < gScores[new_state]:
                     gScores[new_state] = new_cost
 
-                    new_remaining_area = current_node.remainingArea
+                     #fix this: this should be based on how many brick can be build from new position (supported + reachable)
                     newEstimatedTotalCost = new_cost + self._CalculateHeuristic(new_remaining_area)
 
                     new_node = Node(
@@ -358,6 +360,10 @@ class WallVisualizer:
         if coordinate.row == 0:
             return True
         
+        cache_key = (coordinate, placed_bricks_bitset)
+        if cache_key in self.supportCheckCache:
+            return self.supportCheckCache[cache_key]
+        
         supports, brick_len = self.supportDependencies[coordinate]
         
         supported_length = 0
@@ -365,7 +371,9 @@ class WallVisualizer:
             if (placed_bricks_bitset >> brick_below_index) & 1:
                 supported_length += overlap
         
-        return supported_length >= brick_len  
+        result = supported_length >= brick_len
+        self.supportCheckCache[cache_key] = result
+        return result
   
     def _CalculateReachableBricks(self, robot_position: types.Position) -> Set[types.Coordinate]:
         pos_key = (robot_position.x, robot_position.y)
