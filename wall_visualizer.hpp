@@ -145,32 +145,44 @@ struct Brick {
 struct State {
   Position robotPosition;
   std::bitset<MAX_BRICKS> placedBricks;
+  uint64_t nrOfPlacedBricks = 0;
 
-  State() : placedBricks(0) {}
-  State(const Position &pos, std::bitset<MAX_BRICKS> placed)
-      : robotPosition(pos), placedBricks(placed) {}
+  State() : placedBricks(0), nrOfPlacedBricks(0) {}
+  State(const Position &pos, std::bitset<MAX_BRICKS> placed,
+        uint64_t nr_of_placed_bricks)
+      : robotPosition(pos), placedBricks(placed),
+        nrOfPlacedBricks(nr_of_placed_bricks) {}
 
   bool operator==(const State &other) const {
-    return robotPosition == other.robotPosition &&
-           placedBricks == other.placedBricks;
+    if (nrOfPlacedBricks != other.nrOfPlacedBricks) {
+      return false;
+    }
+
+    if (robotPosition != other.robotPosition) {
+      return false;
+    }
+
+    if (placedBricks != other.placedBricks) {
+      return false;
+    }
+    return true;
   }
 };
 
 struct StateHash {
-  std::size_t operator()(const State &s) const {
-    std::size_t h1 = std::hash<int>()(s.robotPosition.x);
-    std::size_t h2 = std::hash<int>()(s.robotPosition.y);
-    std::size_t h3 = std::hash<std::bitset<MAX_BRICKS>>()(s.placedBricks);
-    return h1 ^ (h2 << 1) ^ (h3 << 2);
+  std::size_t operator()(const State &state) const {
+    PositionHash posHash;
+    std::size_t h1 = posHash(state.robotPosition);
+    std::size_t h2 = std::hash<std::bitset<MAX_BRICKS>>{}(state.placedBricks);
+
+    return h1 ^ (h2 << 1);
   }
 };
-
 struct Node {
   double cost;
   double estimatedTotalCost; // f(n) = g(n) + h(n)
   State state;
   size_t currentStrideId;
-  std::vector<Brick> brickHistory;
   uint64_t remainingArea;
 
   // For priority queue (min-heap based on estimatedTotalCost)
@@ -186,6 +198,7 @@ public:
   void RunInteractiveBuild(BondType bond_type);
 
 private:
+  std::vector<Node> mNeighborsTmp;
   Config mConfig;
   std::vector<std::vector<Brick>> mWall;
   std::vector<Brick> mBuildOrder;
@@ -223,10 +236,11 @@ private:
                              const std::bitset<MAX_BRICKS> &placedBricksBitset);
   bool CalculateBrickInReach(const Brick &brick, const Position &robotPosition);
 
-  std::vector<Node> GenerateBrickPlacementNeighbors(const Node &currentNode);
-  std::vector<Node>
-  GenerateMovementNeighbors(const Node &currentNode,
-                            const std::vector<Position> &allPositions);
+  void GenerateBrickPlacementNeighbors(std::vector<Node> &result,
+                                       const Node &currentNode);
+  void GenerateMovementNeighbors(std::vector<Node> &result,
+                                 const Node &currentNode,
+                                 const std::vector<Position> &allPositions);
 
   double CalculateHeuristic(uint64_t remainingArea) const;
 
