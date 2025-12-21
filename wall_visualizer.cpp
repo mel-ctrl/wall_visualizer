@@ -4,6 +4,7 @@
 #include <bitset>
 #include <cstdint>
 #include <iostream>
+#include <vector>
 
 namespace wall_visualizer {
 
@@ -32,6 +33,7 @@ std::string GetStrideColor(int stride_id) {
 WallVisualizer::WallVisualizer(const std::string &config_path)
     : mTotalBricks(0), mTotalCost(0), mTotalStrides(0), mTotalWallArea(0) {
   mConfig = LoadConfig(config_path);
+  mNeighborsTmp.reserve(64 * 1024);
 }
 
 Config WallVisualizer::LoadConfig(const std::string &file_path) {
@@ -264,10 +266,11 @@ bool WallVisualizer::OptimizeBuildOrder() {
     }
   }
 
-  State startingState(Position(0, 0), std::bitset<MAX_BRICKS>());
+  State startingState(Position(0, 0), std::bitset<MAX_BRICKS>(), 0);
 
   std::unordered_map<State, double, StateHash> gScores;
   gScores[startingState] = 0.0;
+  gScores.reserve(1000000);
 
   std::priority_queue<Node, std::vector<Node>, std::greater<Node>>
       priorityQueue;
@@ -290,7 +293,7 @@ bool WallVisualizer::OptimizeBuildOrder() {
     nodesExplored++;
 
     if (nodesExplored % 1000 == 0) {
-      size_t nrPlaced = currentNode.state.placedBricks.count();
+      size_t nrPlaced = currentNode.state.nrOfPlacedBricks;
       std::cout << std::fixed << std::setprecision(2);
       std::cout << "Explored " << nodesExplored << ", placed " << nrPlaced
                 << "/" << mTotalBricks << ", cost " << currentNode.cost
@@ -306,9 +309,8 @@ bool WallVisualizer::OptimizeBuildOrder() {
     }
 
     // Goal check
-    size_t nrOfBricksPlaced = currentNode.state.placedBricks.count();
+    size_t nrOfBricksPlaced = currentNode.state.nrOfPlacedBricks;
     if (nrOfBricksPlaced == mTotalBricks) {
-      mBuildOrder = std::move(currentNode.brickHistory);
       mTotalCost = currentNode.cost;
       mTotalStrides = currentNode.currentStrideId;
       std::cout << "\n✓ Optimal solution found!" << std::endl;
@@ -318,21 +320,13 @@ bool WallVisualizer::OptimizeBuildOrder() {
       return true;
     }
 
+    mNeighborsTmp.clear();
     // Generate neighbors
-    auto placementNeighbors = GenerateBrickPlacementNeighbors(currentNode);
-    auto movementNeighbors =
-        GenerateMovementNeighbors(currentNode, allPositions);
+    GenerateBrickPlacementNeighbors(mNeighborsTmp, currentNode);
+    GenerateMovementNeighbors(mNeighborsTmp, currentNode, allPositions);
 
     // Process all neighbors
-    for (auto &neighbor : placementNeighbors) {
-      auto it = gScores.find(neighbor.state);
-      if (it == gScores.end() || neighbor.cost < it->second) {
-        gScores[neighbor.state] = neighbor.cost;
-        priorityQueue.push(std::move(neighbor));
-      }
-    }
-
-    for (auto &neighbor : movementNeighbors) {
+    for (auto &neighbor : mNeighborsTmp) {
       auto it = gScores.find(neighbor.state);
       if (it == gScores.end() || neighbor.cost < it->second) {
         gScores[neighbor.state] = neighbor.cost;
@@ -345,9 +339,8 @@ bool WallVisualizer::OptimizeBuildOrder() {
   return false;
 }
 
-std::vector<Node>
-WallVisualizer::GenerateBrickPlacementNeighbors(const Node &currentNode) {
-  std::vector<Node> neighbors;
+void WallVisualizer::GenerateBrickPlacementNeighbors(std::vector<Node> &result,
+                                                     const Node &currentNode) {
 
   const auto &reachableCoords =
       mReachabilityCache[currentNode.state.robotPosition];
@@ -367,7 +360,8 @@ WallVisualizer::GenerateBrickPlacementNeighbors(const Node &currentNode) {
 
     std::bitset<MAX_BRICKS> newPlaced = currentNode.state.placedBricks;
     newPlaced.set(brickIndex);
-    State newState(currentNode.state.robotPosition, newPlaced);
+    State newState(currentNode.state.robotPosition, newPlaced,
+                   currentNode.state.nrOfPlacedBricks + 1);
 
     const Brick &designBrick = mWall[coordinate.row][coordinate.column];
     int64_t brickArea = (designBrick.brickType == BrickType::FULL)
@@ -382,22 +376,15 @@ WallVisualizer::GenerateBrickPlacementNeighbors(const Node &currentNode) {
         neighbor.cost + CalculateHeuristic(newRemainingArea);
     neighbor.state = newState;
     neighbor.currentStrideId = currentNode.currentStrideId;
-    neighbor.brickHistory = currentNode.brickHistory;
-    neighbor.brickHistory.emplace_back(coordinate, designBrick.position,
-                                       designBrick.brickType,
-                                       currentNode.currentStrideId);
     neighbor.remainingArea = newRemainingArea;
 
-    neighbors.push_back(std::move(neighbor));
+    result.push_back(std::move(neighbor));
   }
-
-  return neighbors;
 }
 
-std::vector<Node> WallVisualizer::GenerateMovementNeighbors(
-    const Node &currentNode, const std::vector<Position> &allPositions) {
-
-  std::vector<Node> neighbors;
+void WallVisualizer::GenerateMovementNeighbors(
+    std::vector<Node> &result, const Node &currentNode,
+    const std::vector<Position> &allPositions) {
 
   for (const auto &newPos : allPositions) {
     if (newPos == currentNode.state.robotPosition) {
@@ -423,7 +410,8 @@ std::vector<Node> WallVisualizer::GenerateMovementNeighbors(
     }
     */
 
-    State newState(newPos, currentNode.state.placedBricks);
+    State newState(newPos, currentNode.state.placedBricks,
+                   currentNode.state.nrOfPlacedBricks);
 
     double newCost = currentNode.cost + 1.0;
     double newEstimatedTotalCost =
@@ -434,13 +422,10 @@ std::vector<Node> WallVisualizer::GenerateMovementNeighbors(
     neighbor.estimatedTotalCost = newEstimatedTotalCost;
     neighbor.state = newState;
     neighbor.currentStrideId = currentNode.currentStrideId + 1;
-    neighbor.brickHistory = currentNode.brickHistory;
     neighbor.remainingArea = currentNode.remainingArea;
 
-    neighbors.push_back(std::move(neighbor));
+    result.push_back(std::move(neighbor));
   }
-
-  return neighbors;
 }
 
 double WallVisualizer::CalculateHeuristic(uint64_t remainingArea) const {
@@ -642,6 +627,7 @@ void WallVisualizer::RunInteractiveBuild(BondType bond_type) {
     std::cout << "Failed to find valid build order!" << std::endl;
     return;
   }
+  /*
   std::cout << "\nOptimal strategy found: total cost = " << mTotalCost
             << ", strides = " << mTotalStrides << std::endl;
   std::cout << "Press ENTER to place next brick, 'q' to quit" << std::endl;
@@ -679,6 +665,7 @@ void WallVisualizer::RunInteractiveBuild(BondType bond_type) {
   std::cout << "\nPress ENTER to end program";
   std::string userInput;
   std::getline(std::cin, userInput);
+  */
 }
 
 } // namespace wall_visualizer
