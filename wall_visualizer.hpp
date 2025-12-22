@@ -53,40 +53,6 @@ struct CoordinateHash {
   }
 };
 
-struct SupportInfo {
-  int brickIndex;
-  int overlap;
-
-  SupportInfo(int idx, int ovr) : brickIndex(idx), overlap(ovr) {}
-};
-
-struct BrickSupportDependency {
-  std::vector<SupportInfo> supports;
-  size_t brickLength;
-
-  BrickSupportDependency() = default;
-  BrickSupportDependency(const std::vector<SupportInfo> &s, size_t len)
-      : supports(s), brickLength(len) {}
-};
-
-struct SupportCacheKey {
-  Coordinate coordinate;
-  size_t placedBricks;
-
-  bool operator==(const SupportCacheKey &other) const {
-    return coordinate == other.coordinate && placedBricks == other.placedBricks;
-  }
-};
-
-struct SupportCacheKeyHash {
-  size_t operator()(const SupportCacheKey &key) const {
-    CoordinateHash coordHash;
-    size_t h1 = coordHash(key.coordinate);
-    size_t h2 = std::hash<size_t>{}(key.placedBricks);
-    return h1 ^ (h2 << 1);
-  }
-};
-
 struct BrickDimension {
   size_t length = 0;
   size_t height = 0;
@@ -135,55 +101,49 @@ struct Brick {
   Position position;
   BrickType brickType = BrickType::FULL;
   size_t strideId = 0;
+  size_t index = 0;
+  std::vector<size_t> requiredSupportIndices; // these are indices too
 
-  Brick() : brickType(BrickType::FULL), strideId(0) {}
+  Brick() : brickType(BrickType::FULL), strideId(0), index(0) {}
   Brick(const Coordinate &coord, const Position &pos, BrickType type,
-        int stride)
-      : coordinate(coord), position(pos), brickType(type), strideId(stride) {}
+        int stride, size_t idx)
+      : coordinate(coord), position(pos), brickType(type), strideId(stride),
+        index(idx) {}
+};
+
+struct RobotPosition {
+  Position position;
+  std::vector<Brick> reachableBricks;
 };
 
 struct State {
-  Position robotPosition;
-  std::bitset<MAX_BRICKS> placedBricks;
+  size_t robotPositionIdx = 0;
+  size_t placedBricksIdx = 0; // Index into mBitsetTable
   uint64_t nrOfPlacedBricks = 0;
 
-  State() : placedBricks(0), nrOfPlacedBricks(0) {}
-  State(const Position &pos, std::bitset<MAX_BRICKS> placed,
-        uint64_t nr_of_placed_bricks)
-      : robotPosition(pos), placedBricks(placed),
-        nrOfPlacedBricks(nr_of_placed_bricks) {}
+  State() : robotPositionIdx(0), placedBricksIdx(0), nrOfPlacedBricks(0) {}
+  State(int posIdx, size_t bricksIdx, size_t nrPlaced)
+      : robotPositionIdx(posIdx), placedBricksIdx(bricksIdx),
+        nrOfPlacedBricks(nrPlaced) {}
 
   bool operator==(const State &other) const {
-    if (nrOfPlacedBricks != other.nrOfPlacedBricks) {
-      return false;
-    }
-
-    if (robotPosition != other.robotPosition) {
-      return false;
-    }
-
-    if (placedBricks != other.placedBricks) {
-      return false;
-    }
-    return true;
+    return robotPositionIdx == other.robotPositionIdx &&
+           placedBricksIdx == other.placedBricksIdx;
   }
 };
 
 struct StateHash {
   std::size_t operator()(const State &state) const {
-    PositionHash posHash;
-    std::size_t h1 = posHash(state.robotPosition);
-    std::size_t h2 = std::hash<std::bitset<MAX_BRICKS>>{}(state.placedBricks);
-
-    return h1 ^ (h2 << 1);
+    return state.robotPositionIdx + (state.placedBricksIdx << 16);
   }
 };
+
 struct Node {
-  double cost;
-  double estimatedTotalCost; // f(n) = g(n) + h(n)
+  double cost = 0;
+  double estimatedTotalCost = 0; // f(n) = g(n) + h(n)
   State state;
-  size_t currentStrideId;
-  uint64_t remainingArea;
+  size_t currentStrideId = 0;
+  uint64_t remainingArea = 0;
 
   // For priority queue (min-heap based on estimatedTotalCost)
   bool operator>(const Node &other) const {
@@ -199,26 +159,25 @@ public:
 
 private:
   std::vector<Node> mNeighborsTmp;
+  Node mNodeTmp;
   Config mConfig;
   std::vector<std::vector<Brick>> mWall;
   std::vector<Brick> mBuildOrder;
 
+  std::vector<size_t> mRobotPosIdxWithMaxPlaceableBricksTmp;
+
+  std::vector<RobotPosition> mAllRobotPositions;
+
+  std::vector<std::bitset<MAX_BRICKS>> mBitsetTable;
+  std::unordered_map<std::bitset<MAX_BRICKS>, size_t> mBitsetToIndex;
+
   uint64_t mTotalBricks = 0;
-  double mTotalCost = 0;
-  uint64_t mTotalStrides = 0;
   uint64_t mTotalWallArea = 0;
 
   // Caches
   std::unordered_map<Position, std::unordered_set<Coordinate, CoordinateHash>,
                      PositionHash>
       mReachabilityCache;
-  std::unordered_map<Coordinate, int, CoordinateHash> mBrickToIndex;
-
-  std::unordered_map<Coordinate, BrickSupportDependency, CoordinateHash>
-      mSupportDependencies;
-
-  std::unordered_map<SupportCacheKey, bool, SupportCacheKeyHash>
-      mSupportCheckCache;
 
   Config LoadConfig(const std::string &fileName);
   size_t ConvertMMtoUM(double value);
@@ -228,27 +187,41 @@ private:
 
   bool OptimizeBuildOrder();
 
-  std::vector<Position> GetAllPossibleRobotPositions();
+  void InitializeRobotPositions();
   void PrecomputeSupportDependencies();
-  void CalculateReachableBricks(const Position &robotPosition);
+  std::vector<Brick> CalculateReachableBricks(const Position &position);
 
-  bool IsBrickFullySupported(const Coordinate &coordinate,
+  bool IsBrickFullySupported(const Brick &brick,
                              const std::bitset<MAX_BRICKS> &placedBricksBitset);
   bool CalculateBrickInReach(const Brick &brick, const Position &robotPosition);
 
-  void GenerateBrickPlacementNeighbors(std::vector<Node> &result,
-                                       const Node &currentNode);
-  void GenerateMovementNeighbors(std::vector<Node> &result,
-                                 const Node &currentNode,
-                                 const std::vector<Position> &allPositions);
+  void GenerateMovementNeighbors(auto &g_scores, auto &came_from, auto &queue,
+                                 const Node &current_node);
+
+  bool GenerateBrickPlacementNeighbors(auto &g_scores, auto &came_from,
+                                       auto &queue, const Node &current_node);
 
   double CalculateHeuristic(uint64_t remainingArea) const;
-
+  void
+  ReconstructPath(const std::unordered_map<State, State, StateHash> &came_from,
+                  State goalState);
   void
   Visualize(const std::unordered_set<Coordinate, CoordinateHash> &builtBricks);
   void ClearTerminal();
 
   int CountSetBits(size_t n) const { return __builtin_popcountll(n); }
+
+  inline size_t GetOrCreateBitsetIndex(const std::bitset<MAX_BRICKS> &bitset) {
+    auto it = mBitsetToIndex.find(bitset);
+    if (it != mBitsetToIndex.end()) {
+      return it->second;
+    }
+
+    size_t newIndex = mBitsetTable.size();
+    mBitsetTable.push_back(bitset);
+    mBitsetToIndex[bitset] = newIndex;
+    return newIndex;
+  }
 };
 
 } // namespace wall_visualizer

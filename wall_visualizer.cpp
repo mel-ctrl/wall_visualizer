@@ -2,10 +2,12 @@
 #include "lib/toml.hpp"
 #include <algorithm>
 #include <bitset>
+#include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <stdexcept>
+#include <utility>
 #include <vector>
-
 namespace wall_visualizer {
 
 namespace color_codes {
@@ -31,9 +33,9 @@ std::string GetStrideColor(int stride_id) {
 } // namespace color_codes
 
 WallVisualizer::WallVisualizer(const std::string &config_path)
-    : mTotalBricks(0), mTotalCost(0), mTotalStrides(0), mTotalWallArea(0) {
+    : mTotalBricks(0), mTotalWallArea(0) {
   mConfig = LoadConfig(config_path);
-  mNeighborsTmp.reserve(64 * 1024);
+  mRobotPosIdxWithMaxPlaceableBricksTmp.reserve(10 * 1024);
 }
 
 Config WallVisualizer::LoadConfig(const std::string &file_path) {
@@ -120,11 +122,12 @@ void WallVisualizer::CreateStretcherLayout() {
   mTotalWallArea = 0;
 
   auto addBrick = [this](std::vector<Brick> &course, BrickType brickType,
-                         auto row, auto column, auto x_pos) -> int {
+                         auto row, auto column, auto x_pos,
+                         size_t index) -> size_t {
     Coordinate coordinate(row, column);
     Position position(x_pos, row * mConfig.courseHeight);
 
-    course.push_back(Brick(coordinate, position, brickType, 0));
+    course.push_back(Brick(coordinate, position, brickType, 0, index));
 
     mTotalWallArea += (brickType == BrickType::FULL) ? mConfig.fullBrickArea
                                                      : mConfig.halfBrickArea;
@@ -139,37 +142,32 @@ void WallVisualizer::CreateStretcherLayout() {
     size_t column = 0;
 
     if (row % 2 == 1) {
-      currentWidth +=
-          addBrick(course, BrickType::HALF, row, column, currentWidth);
+      currentWidth += addBrick(course, BrickType::HALF, row, column,
+                               currentWidth, mTotalBricks);
+      mTotalBricks++;
       column++;
     }
 
     while (currentWidth + mConfig.fullBrickDimension.length <=
            mConfig.wall.length) {
-      currentWidth +=
-          addBrick(course, BrickType::FULL, row, column, currentWidth);
+      currentWidth += addBrick(course, BrickType::FULL, row, column,
+                               currentWidth, mTotalBricks);
+      mTotalBricks++;
       column++;
     }
 
     if (currentWidth + mConfig.halfBrickDimension.length <=
         mConfig.wall.length) {
-      currentWidth +=
-          addBrick(course, BrickType::HALF, row, column, currentWidth);
+      currentWidth += addBrick(course, BrickType::HALF, row, column,
+                               currentWidth, mTotalBricks);
+      mTotalBricks++;
       column++;
     }
 
-    mTotalBricks += course.size();
     mWall.push_back(std::move(course));
   }
 
-  int64_t index = 0;
-  for (const auto &course : mWall) {
-    for (const auto &brick : course) {
-      mBrickToIndex[brick.coordinate] = index++;
-    }
-  }
-
-  // Debug output
+  PrecomputeSupportDependencies();
   std::cout << "\n=== BRICK LAYOUT DEBUG ===" << std::endl;
   for (size_t rowIdx = 0; rowIdx < std::min(size_t(2), mWall.size());
        ++rowIdx) {
@@ -183,155 +181,87 @@ void WallVisualizer::CreateStretcherLayout() {
                 << brick.position.x << ", " << brickEnd << "]"
                 << ", type="
                 << (brick.brickType == BrickType::FULL ? "FULL" : "HALF")
-                << std::endl;
+                << ", index=" << brick.index << std::endl;
     }
   }
 }
 
 bool WallVisualizer::OptimizeBuildOrder() {
-  auto allPositions = GetAllPossibleRobotPositions();
-
-  // Precompute caches
-  for (const auto &position : allPositions) {
-    CalculateReachableBricks(position);
-  }
-
-  PrecomputeSupportDependencies();
-
-  std::cout << "Total robot positions: " << allPositions.size() << std::endl;
+  std::cout << "Total robot positions: " << mAllRobotPositions.size()
+            << std::endl;
   std::cout << "Total bricks: " << mTotalBricks << std::endl;
   std::cout << "Total wall area: " << mTotalWallArea << std::endl;
 
-  // DEBUG: Check reachability
-  std::cout << "\n=== REACHABILITY DEBUG ===" << std::endl;
-  std::unordered_set<Coordinate, CoordinateHash> allReachableBricks;
-  for (const auto &pos : allPositions) {
-    const auto &reachable = mReachabilityCache[pos];
-    for (const auto &coord : reachable) {
-      allReachableBricks.insert(coord);
-    }
-  }
-  std::cout << "Total bricks reachable from ANY position: "
-            << allReachableBricks.size() << " / " << mTotalBricks << std::endl;
+  mBitsetTable.clear();
+  mBitsetToIndex.clear();
 
-  if (allReachableBricks.size() < mTotalBricks) {
-    std::cout << "ERROR: Some bricks are NEVER reachable!" << std::endl;
-    // Find which bricks are unreachable
-    for (const auto &course : mWall) {
-      for (const auto &brick : course) {
-        if (allReachableBricks.find(brick.coordinate) ==
-            allReachableBricks.end()) {
-          std::cout << "  Unreachable: Row " << brick.coordinate.row << ", Col "
-                    << brick.coordinate.column << " at x=[" << brick.position.x
-                    << ", "
-                    << (brick.position.x +
-                        (brick.brickType == BrickType::FULL
-                             ? mConfig.fullBrickDimension.length
-                             : mConfig.halfBrickDimension.length))
-                    << "]"
-                    << ", y=[" << brick.position.y << ", "
-                    << (brick.position.y +
-                        (brick.brickType == BrickType::FULL
-                             ? mConfig.fullBrickDimension.height
-                             : mConfig.halfBrickDimension.height))
-                    << "]" << std::endl;
-        }
-      }
-    }
-  }
+  std::bitset<MAX_BRICKS> emptyBitset;
+  size_t startBitsetIdx = GetOrCreateBitsetIndex(emptyBitset);
 
-  // DEBUG: Check support dependencies
-  std::cout << "\n=== SUPPORT DEPENDENCIES DEBUG ===" << std::endl;
-  for (size_t row = 0; row < std::min(size_t(3), mWall.size()); ++row) {
-    for (size_t col = 0; col < mWall[row].size(); ++col) {
-      const auto &brick = mWall[row][col];
-      auto depIt = mSupportDependencies.find(brick.coordinate);
-
-      if (row == 0) {
-        std::cout << "Row " << row << ", Col " << col
-                  << ": Ground level (no support needed)" << std::endl;
-      } else if (depIt != mSupportDependencies.end()) {
-        const auto &dep = depIt->second;
-        std::cout << "Row " << row << ", Col " << col << ": needs "
-                  << dep.brickLength << " support, has " << dep.supports.size()
-                  << " supporting bricks:" << std::endl;
-        for (const auto &sup : dep.supports) {
-          std::cout << "    Brick index " << sup.brickIndex << " provides "
-                    << sup.overlap << " overlap" << std::endl;
-        }
-      } else {
-        std::cout << "Row " << row << ", Col " << col
-                  << ": ERROR - no support dependency found!" << std::endl;
-      }
-    }
-  }
-
-  State startingState(Position(0, 0), std::bitset<MAX_BRICKS>(), 0);
-
-  std::unordered_map<State, double, StateHash> gScores;
-  gScores[startingState] = 0.0;
-  gScores.reserve(1000000);
+  std::unordered_map<State, State, StateHash> came_from;
 
   std::priority_queue<Node, std::vector<Node>, std::greater<Node>>
-      priorityQueue;
+      priority_queue;
+
+  auto starting_state = State(0, startBitsetIdx, 0);
 
   Node startNode;
   startNode.cost = 0.0;
   startNode.estimatedTotalCost = CalculateHeuristic(mTotalWallArea);
-  startNode.state = startingState;
+  startNode.state = starting_state;
   startNode.currentStrideId = 0;
   startNode.remainingArea = mTotalWallArea;
 
-  priorityQueue.push(std::move(startNode));
+  priority_queue.push(std::move(startNode));
 
-  size_t nodesExplored = 0;
+  std::unordered_map<State, double, StateHash> g_scores;
+  g_scores[starting_state] = 0.0;
+  g_scores.reserve(1000000);
 
-  while (!priorityQueue.empty()) {
-    Node currentNode = priorityQueue.top();
-    priorityQueue.pop();
+  size_t nodes_explored = 0;
+  while (!priority_queue.empty()) {
+    Node currentNode = priority_queue.top();
+    priority_queue.pop();
 
-    nodesExplored++;
+    nodes_explored++;
 
-    if (nodesExplored % 1000 == 0) {
+    if (nodes_explored % 1000 == 0) {
       size_t nrPlaced = currentNode.state.nrOfPlacedBricks;
       std::cout << std::fixed << std::setprecision(2);
-      std::cout << "Explored " << nodesExplored << ", placed " << nrPlaced
+      std::cout << "Explored " << nodes_explored << ", placed " << nrPlaced
                 << "/" << mTotalBricks << ", cost " << currentNode.cost
                 << ", f(n)=" << currentNode.estimatedTotalCost
                 << ", h(n)=" << CalculateHeuristic(currentNode.remainingArea)
-                << ", queue " << priorityQueue.size() << std::endl;
+                << ", queue " << priority_queue.size() << std::endl;
     }
 
     // Check if we've found a better path to this state
-    auto it = gScores.find(currentNode.state);
-    if (it != gScores.end() && currentNode.cost > it->second) {
+    auto it = g_scores.find(currentNode.state);
+    if (it != g_scores.end() && currentNode.cost > it->second) {
       continue;
     }
 
     // Goal check
     size_t nrOfBricksPlaced = currentNode.state.nrOfPlacedBricks;
     if (nrOfBricksPlaced == mTotalBricks) {
-      mTotalCost = currentNode.cost;
-      mTotalStrides = currentNode.currentStrideId;
+      ReconstructPath(came_from, currentNode.state);
+      std::cout << "h(G): " << CalculateHeuristic(currentNode.remainingArea)
+                << std::endl;
       std::cout << "\n✓ Optimal solution found!" << std::endl;
-      std::cout << "  Total cost: " << mTotalCost << std::endl;
-      std::cout << "  Total strides: " << mTotalStrides << std::endl;
-      std::cout << "  Nodes explored: " << nodesExplored << std::endl;
+      std::cout << "  Total cost: " << currentNode.cost << std::endl;
+      std::cout << "  Total strides: " << currentNode.currentStrideId
+                << std::endl;
+      std::cout << "  Nodes explored: " << nodes_explored << std::endl;
       return true;
     }
 
-    mNeighborsTmp.clear();
-    // Generate neighbors
-    GenerateBrickPlacementNeighbors(mNeighborsTmp, currentNode);
-    GenerateMovementNeighbors(mNeighborsTmp, currentNode, allPositions);
+    bool can_place_any = GenerateBrickPlacementNeighbors(
+        g_scores, came_from, priority_queue, currentNode);
 
-    // Process all neighbors
-    for (auto &neighbor : mNeighborsTmp) {
-      auto it = gScores.find(neighbor.state);
-      if (it == gScores.end() || neighbor.cost < it->second) {
-        gScores[neighbor.state] = neighbor.cost;
-        priorityQueue.push(std::move(neighbor));
-      }
+    if (!can_place_any) {
+      // Must move - no placeable bricks here
+      GenerateMovementNeighbors(g_scores, came_from, priority_queue,
+                                currentNode);
     }
   }
 
@@ -339,92 +269,123 @@ bool WallVisualizer::OptimizeBuildOrder() {
   return false;
 }
 
-void WallVisualizer::GenerateBrickPlacementNeighbors(std::vector<Node> &result,
-                                                     const Node &currentNode) {
+bool WallVisualizer::GenerateBrickPlacementNeighbors(auto &g_scores,
+                                                     auto &came_from,
+                                                     auto &priority_queue,
+                                                     const Node &current_node) {
 
-  const auto &reachableCoords =
-      mReachabilityCache[currentNode.state.robotPosition];
+  const RobotPosition &robot_pos =
+      mAllRobotPositions[current_node.state.robotPositionIdx];
 
-  for (const auto &coordinate : reachableCoords) {
-    int brickIndex = mBrickToIndex[coordinate];
+  const auto &reachable_bricks = robot_pos.reachableBricks;
 
+  std::bitset<MAX_BRICKS> current_bricks =
+      mBitsetTable[current_node.state.placedBricksIdx];
+
+  bool can_place_any = false;
+  for (const auto &brick : reachable_bricks) {
     // Check if already placed
-    if (currentNode.state.placedBricks.test(brickIndex)) {
+    if (current_bricks.test(brick.index)) {
       continue;
     }
 
     // Check support
-    if (!IsBrickFullySupported(coordinate, currentNode.state.placedBricks)) {
+    if (!IsBrickFullySupported(brick, current_bricks)) {
       continue;
     }
 
-    std::bitset<MAX_BRICKS> newPlaced = currentNode.state.placedBricks;
-    newPlaced.set(brickIndex);
-    State newState(currentNode.state.robotPosition, newPlaced,
-                   currentNode.state.nrOfPlacedBricks + 1);
+    can_place_any = true;
 
-    const Brick &designBrick = mWall[coordinate.row][coordinate.column];
-    int64_t brickArea = (designBrick.brickType == BrickType::FULL)
-                            ? mConfig.fullBrickArea
-                            : mConfig.halfBrickArea;
-    int64_t newRemainingArea =
-        std::max(uint64_t(0), currentNode.remainingArea - brickArea);
+    std::bitset<MAX_BRICKS> new_placed = current_bricks;
 
-    Node neighbor;
-    neighbor.cost = currentNode.cost;
-    neighbor.estimatedTotalCost =
-        neighbor.cost + CalculateHeuristic(newRemainingArea);
-    neighbor.state = newState;
-    neighbor.currentStrideId = currentNode.currentStrideId;
-    neighbor.remainingArea = newRemainingArea;
+    new_placed.set(brick.index);
 
-    result.push_back(std::move(neighbor));
+    size_t newBitsetIdx = GetOrCreateBitsetIndex(new_placed);
+
+    State newState(current_node.state.robotPositionIdx, newBitsetIdx,
+                   current_node.state.nrOfPlacedBricks + 1);
+    auto new_cost = current_node.cost;
+
+    auto it = g_scores.find(newState);
+    if (it == g_scores.end() || new_cost < it->second) {
+
+      int64_t brickArea = (brick.brickType == BrickType::FULL)
+                              ? mConfig.fullBrickArea
+                              : mConfig.halfBrickArea;
+      int64_t newRemainingArea =
+          std::max(uint64_t(0), current_node.remainingArea - brickArea);
+
+      mNodeTmp.cost = new_cost;
+      mNodeTmp.estimatedTotalCost =
+          new_cost + CalculateHeuristic(newRemainingArea);
+      mNodeTmp.state = newState;
+      mNodeTmp.currentStrideId = current_node.currentStrideId;
+      mNodeTmp.remainingArea = newRemainingArea;
+
+      g_scores[mNodeTmp.state] = mNodeTmp.cost;
+      came_from[newState] = current_node.state;
+      priority_queue.push(std::move(mNodeTmp));
+    }
   }
+  return can_place_any;
 }
 
-void WallVisualizer::GenerateMovementNeighbors(
-    std::vector<Node> &result, const Node &currentNode,
-    const std::vector<Position> &allPositions) {
+void WallVisualizer::GenerateMovementNeighbors(auto &g_scores, auto &came_from,
+                                               auto &priority_queue,
+                                               const Node &current_node) {
 
-  for (const auto &newPos : allPositions) {
-    if (newPos == currentNode.state.robotPosition) {
+  std::bitset<MAX_BRICKS> current_bricks =
+      mBitsetTable[current_node.state.placedBricksIdx];
+
+  mRobotPosIdxWithMaxPlaceableBricksTmp.clear();
+  size_t max_placeable = 0;
+
+  for (size_t i = 0; i < mAllRobotPositions.size(); ++i) {
+    if (i == current_node.state.robotPositionIdx) {
       continue;
     }
-    /*
-    const auto &reachableCoords =
-        mReachabilityCache[currentNode.state.robotPosition];
 
-    bool could_place_any_brick = false;
-    for (const auto &coordinate : reachableCoords) {
-      int brickIndex = mBrickToIndex[coordinate];
-
-      if (!currentNode.state.placedBricks.test(brickIndex) &&
-          IsBrickFullySupported(coordinate, currentNode.state.placedBricks)) {
-        could_place_any_brick = true;
-        break;
+    size_t placeable_count = 0;
+    for (const auto &reachable_brick : mAllRobotPositions[i].reachableBricks) {
+      if (!current_bricks.test(reachable_brick.index) &&
+          IsBrickFullySupported(reachable_brick, current_bricks)) {
+        placeable_count++;
       }
     }
 
-    if (!could_place_any_brick) {
-      continue;
+    if (placeable_count > 0) {
+      if (placeable_count > max_placeable) {
+        // Found new max - clear old positions and start fresh
+        max_placeable = placeable_count;
+        mRobotPosIdxWithMaxPlaceableBricksTmp.clear();
+        mRobotPosIdxWithMaxPlaceableBricksTmp.push_back(i);
+      } else if (placeable_count == max_placeable) {
+        // Ties with current max
+        mRobotPosIdxWithMaxPlaceableBricksTmp.push_back(i);
+      }
     }
-    */
+  }
 
-    State newState(newPos, currentNode.state.placedBricks,
-                   currentNode.state.nrOfPlacedBricks);
+  for (auto i : mRobotPosIdxWithMaxPlaceableBricksTmp) {
 
-    double newCost = currentNode.cost + 1.0;
-    double newEstimatedTotalCost =
-        newCost + CalculateHeuristic(currentNode.remainingArea);
+    State newState(i, current_node.state.placedBricksIdx,
+                   current_node.state.nrOfPlacedBricks);
 
-    Node neighbor;
-    neighbor.cost = newCost;
-    neighbor.estimatedTotalCost = newEstimatedTotalCost;
-    neighbor.state = newState;
-    neighbor.currentStrideId = currentNode.currentStrideId + 1;
-    neighbor.remainingArea = currentNode.remainingArea;
+    auto new_cost = current_node.cost + 1.0;
 
-    result.push_back(std::move(neighbor));
+    auto it = g_scores.find(newState);
+    if (it == g_scores.end() || new_cost < it->second) {
+      mNodeTmp.cost = new_cost;
+      mNodeTmp.estimatedTotalCost =
+          new_cost + CalculateHeuristic(current_node.remainingArea);
+      mNodeTmp.state = newState;
+      mNodeTmp.currentStrideId = current_node.currentStrideId + 1;
+      mNodeTmp.remainingArea = current_node.remainingArea;
+
+      g_scores[mNodeTmp.state] = mNodeTmp.cost;
+      came_from[newState] = current_node.state;
+      priority_queue.push(std::move(mNodeTmp));
+    }
   }
 }
 
@@ -433,49 +394,45 @@ double WallVisualizer::CalculateHeuristic(uint64_t remainingArea) const {
          static_cast<double>(
              (mConfig.envelope.length * mConfig.envelope.height));
 }
-
-std::vector<Position> WallVisualizer::GetAllPossibleRobotPositions() {
-  std::vector<Position> positions;
+void WallVisualizer::InitializeRobotPositions() {
+  mAllRobotPositions.clear();
 
   int hStep = mConfig.halfBrickDimension.length;
-  int vStep = mConfig.halfBrickDimension.height;
+  int vStep = mConfig.courseHeight;
 
   int hStart = 0;
   int hEnd = mConfig.wall.length;
   int vStart = 0;
   int vEnd = mConfig.wall.height;
 
-  std::cout << "DEBUG Position generation:" << std::endl;
-  std::cout << "  H: " << hStart << " to " << hEnd << " step " << hStep
-            << std::endl;
-  std::cout << "  V: " << vStart << " to " << vEnd << " step " << vStep
-            << std::endl;
-
   for (int hPos = hStart; hPos < hEnd; hPos += hStep) {
     for (int vPos = vStart; vPos < vEnd; vPos += vStep) {
-      positions.emplace_back(hPos, vPos);
+      auto pos = Position(hPos, vPos);
+      ;
+      mAllRobotPositions.emplace_back(RobotPosition{
+          .position = pos,
+          .reachableBricks = CalculateReachableBricks(pos),
+      });
     }
   }
 
-  std::cout << "  Total positions: " << positions.size() << std::endl;
-
-  return positions;
+  std::cout << "  Total positions: " << mAllRobotPositions.size() << std::endl;
 }
-
 void WallVisualizer::PrecomputeSupportDependencies() {
   for (size_t rowIdx = 0; rowIdx < mWall.size(); ++rowIdx) {
-    if (rowIdx == 0)
+    if (rowIdx == 0) {
+      // Ground level bricks have no dependencies - already empty
       continue;
+    }
 
-    const auto &course = mWall[rowIdx];
-    for (const auto &brick : course) {
+    auto &course = mWall[rowIdx];
+    for (auto &brick : course) {
       int brickStart = brick.position.x;
       int brickLen = (brick.brickType == BrickType::FULL)
                          ? mConfig.fullBrickDimension.length
                          : mConfig.halfBrickDimension.length;
       int brickEnd = brickStart + brickLen;
 
-      std::vector<SupportInfo> supports;
       const auto &courseBelow = mWall[rowIdx - 1];
 
       for (const auto &brickBelow : courseBelow) {
@@ -490,61 +447,43 @@ void WallVisualizer::PrecomputeSupportDependencies() {
         int overlap = std::max(0, overlapEnd - overlapStart);
 
         if (overlap > 0) {
-          supports.emplace_back(mBrickToIndex[brickBelow.coordinate], overlap);
+          brick.requiredSupportIndices.push_back(brickBelow.index);
         }
       }
-
-      mSupportDependencies[brick.coordinate] =
-          BrickSupportDependency(supports, brickLen);
     }
   }
 }
 
 bool WallVisualizer::IsBrickFullySupported(
-    const Coordinate &coordinate,
-    const std::bitset<MAX_BRICKS> &placedBricksBitset) {
-  if (coordinate.row == 0) {
+    const Brick &brick, const std::bitset<MAX_BRICKS> &placedBricksBitset) {
+
+  // Ground level or no dependencies
+  if (brick.requiredSupportIndices.empty()) {
     return true;
   }
 
-  auto depIt = mSupportDependencies.find(coordinate);
-  if (depIt == mSupportDependencies.end()) {
-    return false;
-  }
-
-  const BrickSupportDependency &dependency = depIt->second;
-  size_t supportedLength = 0;
-
-  for (const auto &supportInfo : dependency.supports) {
-    if (placedBricksBitset.test(supportInfo.brickIndex)) {
-      supportedLength += supportInfo.overlap;
-
-      if (supportedLength >= dependency.brickLength) {
-        return true;
-      }
+  // ALL required bricks must be placed
+  for (auto reqBrickIndex : brick.requiredSupportIndices) {
+    if (!placedBricksBitset.test(reqBrickIndex)) {
+      return false;
     }
   }
 
-  return false;
+  return true;
 }
 
-void WallVisualizer::CalculateReachableBricks(const Position &robotPosition) {
-  auto it = mReachabilityCache.find(robotPosition);
-  if (it != mReachabilityCache.end()) {
-    return;
-  }
-
-  std::unordered_set<Coordinate, CoordinateHash> reachable;
+std::vector<Brick>
+WallVisualizer::CalculateReachableBricks(const Position &position) {
+  std::vector<Brick> result;
 
   for (const auto &course : mWall) {
     for (const auto &brick : course) {
-      if (CalculateBrickInReach(brick, robotPosition)) {
-        reachable.insert(brick.coordinate);
+      if (CalculateBrickInReach(brick, position)) {
+        result.push_back(brick);
       }
     }
   }
-
-  mReachabilityCache[robotPosition] = std::move(reachable);
+  return result;
 }
 
 bool WallVisualizer::CalculateBrickInReach(const Brick &brick,
@@ -617,55 +556,101 @@ void WallVisualizer::Visualize(
   }
 }
 
+void WallVisualizer::ReconstructPath(
+    const std::unordered_map<State, State, StateHash> &came_from,
+    State goalState) {
+
+  mBuildOrder.clear();
+
+  std::vector<State> path;
+  State current = goalState;
+
+  // Build path from goal to start
+  while (came_from.find(current) != came_from.end()) {
+    path.push_back(current);
+    current = came_from.at(current);
+  }
+  path.push_back(current); // Add start state
+
+  // Reverse to get start to goal
+  std::reverse(path.begin(), path.end());
+
+  int stride_id = 0;
+  for (size_t i = 1; i < path.size(); ++i) {
+    const State &prev_state = path[i - 1];
+    const State &current_state = path[i];
+
+    // Check if robot moved
+    if (prev_state.robotPositionIdx != current_state.robotPositionIdx) {
+      stride_id++;
+    }
+
+    // Find which bricks were placed
+    for (size_t brickIdx = 0; brickIdx < mTotalBricks; ++brickIdx) {
+      if (!(mBitsetTable[prev_state.placedBricksIdx]).test(brickIdx) &&
+          (mBitsetTable[current_state.placedBricksIdx]).test(brickIdx)) {
+        // Find the brick
+        for (const auto &course : mWall) {
+          for (const auto &brick : course) {
+            if (brick.index == brickIdx) {
+              Brick buildBrick = brick;
+              buildBrick.strideId = stride_id;
+              mBuildOrder.push_back(buildBrick);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 void WallVisualizer::RunInteractiveBuild(BondType bond_type) {
   std::cout << "Visualizing for bond type STRETCHER" << std::endl;
 
   CreateLayout(bond_type);
+  InitializeRobotPositions();
 
   bool success = OptimizeBuildOrder();
   if (!success) {
     std::cout << "Failed to find valid build order!" << std::endl;
     return;
   }
-  /*
-  std::cout << "\nOptimal strategy found: total cost = " << mTotalCost
-            << ", strides = " << mTotalStrides << std::endl;
-  std::cout << "Press ENTER to place next brick, 'q' to quit" << std::endl;
 
-  std::unordered_set<Coordinate, CoordinateHash> builtBricks;
+  // std::cout << "Press ENTER to place next brick, 'q' to quit" << std::endl;
 
-  for (size_t idx = 0; idx < mBuildOrder.size(); ++idx) {
-    const auto &brick = mBuildOrder[idx];
+  // std::unordered_set<Coordinate, CoordinateHash> builtBricks;
 
-    std::cout << "\n[" << (idx + 1) << "/" << mBuildOrder.size() << "] "
-              << "Place "
-              << (brick.brickType == BrickType::FULL ? "FULL" : "HALF")
-              << " brick at row " << brick.coordinate.row << ", col "
-              << brick.coordinate.column << "? ";
+  // for (size_t idx = 0; idx < mBuildOrder.size(); ++idx) {
+  //   const auto &brick = mBuildOrder[idx];
 
-    std::string userInput;
-    std::getline(std::cin, userInput);
+  //   std::cout << "\n[" << (idx + 1) << "/" << mBuildOrder.size() << "] "
+  //             << "Place "
+  //             << (brick.brickType == BrickType::FULL ? "FULL" : "HALF")
+  //             << " brick at row " << brick.coordinate.row << ", col "
+  //             << brick.coordinate.column << "? ";
 
-    // Trim whitespace and convert to lowercase
-    userInput.erase(0, userInput.find_first_not_of(" \t\n\r"));
-    userInput.erase(userInput.find_last_not_of(" \t\n\r") + 1);
-    std::transform(userInput.begin(), userInput.end(), userInput.begin(),
-                   ::tolower);
+  //   std::string userInput;
+  //   std::getline(std::cin, userInput);
 
-    if (userInput == "q") {
-      std::cout << "Build stopped" << std::endl;
-      break;
-    } else {
-      builtBricks.insert(
-          Coordinate(brick.coordinate.row, brick.coordinate.column));
-      Visualize(builtBricks);
-    }
-  }
+  //   // Trim whitespace and convert to lowercase
+  //   userInput.erase(0, userInput.find_first_not_of(" \t\n\r"));
+  //   userInput.erase(userInput.find_last_not_of(" \t\n\r") + 1);
+  //   std::transform(userInput.begin(), userInput.end(), userInput.begin(),
+  //                  ::tolower);
 
-  std::cout << "\nPress ENTER to end program";
-  std::string userInput;
-  std::getline(std::cin, userInput);
-  */
+  //   if (userInput == "q") {
+  //     std::cout << "Build stopped" << std::endl;
+  //     break;
+  //   } else {
+  //     builtBricks.insert(
+  //         Coordinate(brick.coordinate.row, brick.coordinate.column));
+  //     Visualize(builtBricks);
+  //   }
+  // }
+
+  // std::cout << "\nPress ENTER to end program";
+  // std::string userInput;
+  // std::getline(std::cin, userInput);
 }
 
 } // namespace wall_visualizer
