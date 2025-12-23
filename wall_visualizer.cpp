@@ -106,9 +106,15 @@ size_t WallVisualizer::ConvertMMtoUM(double value) {
 }
 
 void WallVisualizer::CreateLayout(BondType bondType) {
+  size_t nr_of_bricks_h =
+      round(mConfig.envelope.length / mConfig.fullBrickDimension.length);
   switch (bondType) {
   case BondType::STRETCHER:
     CreateStretcherLayout();
+
+    mMaxBricksAtOnce = nr_of_bricks_h * (nr_of_bricks_h + 1);
+    std::cout << "max at once: " << mMaxBricksAtOnce << std::endl;
+
     break;
   default:
     throw std::runtime_error("Bond type not implemented");
@@ -193,7 +199,6 @@ bool WallVisualizer::OptimizeBuildOrder() {
   std::cout << "Total wall area: " << mTotalWallArea << std::endl;
 
   mBitsetTable.clear();
-  mBitsetToIndex.clear();
 
   std::bitset<MAX_BRICKS> emptyBitset;
   size_t startBitsetIdx = GetOrCreateBitsetIndex(emptyBitset);
@@ -207,7 +212,7 @@ bool WallVisualizer::OptimizeBuildOrder() {
 
   Node startNode;
   startNode.cost = 0.0;
-  startNode.estimatedTotalCost = CalculateHeuristic(mTotalWallArea);
+  startNode.estimatedTotalCost = CalculateHeuristic(starting_state);
   startNode.state = starting_state;
   startNode.currentStrideId = 0;
   startNode.remainingArea = mTotalWallArea;
@@ -231,7 +236,7 @@ bool WallVisualizer::OptimizeBuildOrder() {
       std::cout << "Explored " << nodes_explored << ", placed " << nrPlaced
                 << "/" << mTotalBricks << ", cost " << currentNode.cost
                 << ", f(n)=" << currentNode.estimatedTotalCost
-                << ", h(n)=" << CalculateHeuristic(currentNode.remainingArea)
+                << ", h(n)=" << CalculateHeuristic(currentNode.state)
                 << ", queue " << priority_queue.size() << std::endl;
     }
 
@@ -245,7 +250,7 @@ bool WallVisualizer::OptimizeBuildOrder() {
     size_t nrOfBricksPlaced = currentNode.state.nrOfPlacedBricks;
     if (nrOfBricksPlaced == mTotalBricks) {
       ReconstructPath(came_from, currentNode.state);
-      std::cout << "h(G): " << CalculateHeuristic(currentNode.remainingArea)
+      std::cout << "h(G): " << CalculateHeuristic(currentNode.state)
                 << std::endl;
       std::cout << "\n✓ Optimal solution found!" << std::endl;
       std::cout << "  Total cost: " << currentNode.cost << std::endl;
@@ -316,8 +321,7 @@ bool WallVisualizer::GenerateBrickPlacementNeighbors(auto &g_scores,
           std::max(uint64_t(0), current_node.remainingArea - brickArea);
 
       mNodeTmp.cost = new_cost;
-      mNodeTmp.estimatedTotalCost =
-          new_cost + CalculateHeuristic(newRemainingArea);
+      mNodeTmp.estimatedTotalCost = new_cost + CalculateHeuristic(newState);
       mNodeTmp.state = newState;
       mNodeTmp.currentStrideId = current_node.currentStrideId;
       mNodeTmp.remainingArea = newRemainingArea;
@@ -362,6 +366,10 @@ void WallVisualizer::GenerateMovementNeighbors(auto &g_scores, auto &came_from,
       } else if (placeable_count == max_placeable) {
         // Ties with current max
         mRobotPosIdxWithMaxPlaceableBricksTmp.push_back(i);
+        if (mRobotPosIdxWithMaxPlaceableBricksTmp.size() >=
+            MAX_MOVEMENT_NEIGHBORS) {
+          break;
+        }
       }
     }
   }
@@ -377,7 +385,7 @@ void WallVisualizer::GenerateMovementNeighbors(auto &g_scores, auto &came_from,
     if (it == g_scores.end() || new_cost < it->second) {
       mNodeTmp.cost = new_cost;
       mNodeTmp.estimatedTotalCost =
-          new_cost + CalculateHeuristic(current_node.remainingArea);
+          new_cost + CalculateHeuristic(current_node.state);
       mNodeTmp.state = newState;
       mNodeTmp.currentStrideId = current_node.currentStrideId + 1;
       mNodeTmp.remainingArea = current_node.remainingArea;
@@ -389,10 +397,11 @@ void WallVisualizer::GenerateMovementNeighbors(auto &g_scores, auto &came_from,
   }
 }
 
-double WallVisualizer::CalculateHeuristic(uint64_t remainingArea) const {
-  return static_cast<double>(remainingArea) /
-         static_cast<double>(
-             (mConfig.envelope.length * mConfig.envelope.height));
+double WallVisualizer::CalculateHeuristic(const State &state) const {
+
+  return static_cast<double>(mTotalBricks - state.nrOfPlacedBricks) /
+         (mMaxBricksAtOnce + 1); // adding 1 extra brick since it is better to
+                                 // underestimate the cost
 }
 void WallVisualizer::InitializeRobotPositions() {
   mAllRobotPositions.clear();

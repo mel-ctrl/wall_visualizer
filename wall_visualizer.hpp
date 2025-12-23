@@ -7,6 +7,8 @@
 
 namespace wall_visualizer {
 
+const size_t MAX_MOVEMENT_NEIGHBORS = 100;
+
 constexpr size_t MAX_BRICKS = 512;
 
 enum class BrickType { FULL, HALF };
@@ -161,6 +163,8 @@ private:
   std::vector<Node> mNeighborsTmp;
   Node mNodeTmp;
   Config mConfig;
+
+  uint64_t mMaxBricksAtOnce = 0;
   std::vector<std::vector<Brick>> mWall;
   std::vector<Brick> mBuildOrder;
 
@@ -201,7 +205,7 @@ private:
   bool GenerateBrickPlacementNeighbors(auto &g_scores, auto &came_from,
                                        auto &queue, const Node &current_node);
 
-  double CalculateHeuristic(uint64_t remainingArea) const;
+  double CalculateHeuristic(const State &state) const;
   void
   ReconstructPath(const std::unordered_map<State, State, StateHash> &came_from,
                   State goalState);
