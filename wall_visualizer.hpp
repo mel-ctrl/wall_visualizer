@@ -7,7 +7,7 @@
 
 namespace wall_visualizer {
 
-const size_t MAX_MOVEMENT_NEIGHBORS = 100;
+const size_t MAX_MOVEMENT_NEIGHBORS = 1000;
 
 constexpr size_t MAX_BRICKS = 512;
 
@@ -145,7 +145,6 @@ struct Node {
   double estimatedTotalCost = 0; // f(n) = g(n) + h(n)
   State state;
   size_t currentStrideId = 0;
-  uint64_t remainingArea = 0;
 
   // For priority queue (min-heap based on estimatedTotalCost)
   bool operator>(const Node &other) const {
@@ -169,6 +168,8 @@ private:
   std::vector<Brick> mBuildOrder;
 
   std::vector<size_t> mRobotPosIdxWithMaxPlaceableBricksTmp;
+  std::vector<State> mStatesTmp;
+  std::vector<State> mPrunedStatesTmp;
 
   std::vector<RobotPosition> mAllRobotPositions;
 
@@ -190,7 +191,9 @@ private:
   void CreateStretcherLayout();
 
   bool OptimizeBuildOrder();
-
+  std::vector<State> &PruneStates(const std::vector<State> &states,
+                                  std::vector<State> &result);
+  std::vector<State> &GetPrunedStates(const State &state);
   void InitializeRobotPositions();
   void PrecomputeSupportDependencies();
   std::vector<Brick> CalculateReachableBricks(const Position &position);
@@ -199,12 +202,7 @@ private:
                              const std::bitset<MAX_BRICKS> &placedBricksBitset);
   bool CalculateBrickInReach(const Brick &brick, const Position &robotPosition);
 
-  void GenerateMovementNeighbors(auto &g_scores, auto &came_from, auto &queue,
-                                 const Node &current_node);
-
-  bool GenerateBrickPlacementNeighbors(auto &g_scores, auto &came_from,
-                                       auto &queue, const Node &current_node);
-
+  State CreateBrickPlacementState(const State &state);
   double CalculateHeuristic(const State &state) const;
   void
   ReconstructPath(const std::unordered_map<State, State, StateHash> &came_from,
