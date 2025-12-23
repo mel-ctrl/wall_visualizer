@@ -25,9 +25,8 @@ const std::string GRAY = "\033[90m";
 const std::string RESET = "\033[0m";
 
 std::string GetStrideColor(int stride_id) {
-  const std::vector<std::string> colors = {RED,     GREEN, YELLOW, BLUE,
-                                           MAGENTA, CYAN,  ORANGE, PURPLE,
-                                           PINK,    GRAY,  RESET};
+  const std::vector<std::string> colors = {RED,  GREEN,  YELLOW, BLUE, MAGENTA,
+                                           CYAN, ORANGE, PURPLE, PINK, GRAY};
   return colors[stride_id % colors.size()];
 }
 } // namespace color_codes
@@ -200,73 +199,81 @@ bool WallVisualizer::OptimizeBuildOrder() {
 
   mBitsetTable.clear();
 
-  std::bitset<MAX_BRICKS> emptyBitset;
-  size_t startBitsetIdx = GetOrCreateBitsetIndex(emptyBitset);
-
   std::unordered_map<State, State, StateHash> came_from;
 
   std::priority_queue<Node, std::vector<Node>, std::greater<Node>>
       priority_queue;
 
-  auto starting_state = State(0, startBitsetIdx, 0);
-
-  Node startNode;
-  startNode.cost = 0.0;
-  startNode.estimatedTotalCost = CalculateHeuristic(starting_state);
-  startNode.state = starting_state;
-  startNode.currentStrideId = 0;
-  startNode.remainingArea = mTotalWallArea;
-
-  priority_queue.push(std::move(startNode));
-
   std::unordered_map<State, double, StateHash> g_scores;
-  g_scores[starting_state] = 0.0;
   g_scores.reserve(1000000);
+
+  size_t startBitsetIdx = GetOrCreateBitsetIndex(std::bitset<MAX_BRICKS>());
+
+  auto starting_state = State(0, startBitsetIdx, 0);
+  auto &pruned_states = GetPrunedStates(starting_state);
+  for (auto const &state : pruned_states) {
+    Node start_node;
+    start_node.cost = 0.0;
+    start_node.estimatedTotalCost = CalculateHeuristic(state);
+    start_node.state = state;
+    start_node.currentStrideId = 0;
+
+    g_scores[state] = start_node.cost;
+    priority_queue.push(std::move(start_node));
+  }
 
   size_t nodes_explored = 0;
   while (!priority_queue.empty()) {
-    Node currentNode = priority_queue.top();
+    Node current_node = priority_queue.top();
     priority_queue.pop();
 
     nodes_explored++;
 
     if (nodes_explored % 1000 == 0) {
-      size_t nrPlaced = currentNode.state.nrOfPlacedBricks;
+      size_t nrPlaced = current_node.state.nrOfPlacedBricks;
       std::cout << std::fixed << std::setprecision(2);
       std::cout << "Explored " << nodes_explored << ", placed " << nrPlaced
-                << "/" << mTotalBricks << ", cost " << currentNode.cost
-                << ", f(n)=" << currentNode.estimatedTotalCost
-                << ", h(n)=" << CalculateHeuristic(currentNode.state)
+                << "/" << mTotalBricks << ", cost " << current_node.cost
+                << ", f(n)=" << current_node.estimatedTotalCost
+                << ", h(n)=" << CalculateHeuristic(current_node.state)
                 << ", queue " << priority_queue.size() << std::endl;
     }
 
     // Check if we've found a better path to this state
-    auto it = g_scores.find(currentNode.state);
-    if (it != g_scores.end() && currentNode.cost > it->second) {
+    auto it = g_scores.find(current_node.state);
+    if (it != g_scores.end() && current_node.cost > it->second) {
       continue;
     }
 
     // Goal check
-    size_t nrOfBricksPlaced = currentNode.state.nrOfPlacedBricks;
+    size_t nrOfBricksPlaced = current_node.state.nrOfPlacedBricks;
     if (nrOfBricksPlaced == mTotalBricks) {
-      ReconstructPath(came_from, currentNode.state);
-      std::cout << "h(G): " << CalculateHeuristic(currentNode.state)
+      ReconstructPath(came_from, current_node.state);
+      std::cout << "h(G): " << CalculateHeuristic(current_node.state)
                 << std::endl;
       std::cout << "\n✓ Optimal solution found!" << std::endl;
-      std::cout << "  Total cost: " << currentNode.cost << std::endl;
-      std::cout << "  Total strides: " << currentNode.currentStrideId
+      std::cout << "  Total cost: " << current_node.cost << std::endl;
+      std::cout << "  Total strides: " << current_node.currentStrideId
                 << std::endl;
       std::cout << "  Nodes explored: " << nodes_explored << std::endl;
       return true;
     }
 
-    bool can_place_any = GenerateBrickPlacementNeighbors(
-        g_scores, came_from, priority_queue, currentNode);
+    auto &pruned_states = GetPrunedStates(current_node.state);
+    auto new_cost = current_node.cost + 1.0;
 
-    if (!can_place_any) {
-      // Must move - no placeable bricks here
-      GenerateMovementNeighbors(g_scores, came_from, priority_queue,
-                                currentNode);
+    for (auto const &state : pruned_states) {
+      auto it = g_scores.find(state);
+      if (it == g_scores.end() || new_cost < it->second) {
+        mNodeTmp.cost = new_cost;
+        mNodeTmp.estimatedTotalCost = new_cost + CalculateHeuristic(state);
+        mNodeTmp.state = state;
+        mNodeTmp.currentStrideId = current_node.currentStrideId + 1;
+
+        g_scores[mNodeTmp.state] = mNodeTmp.cost;
+        came_from[state] = current_node.state;
+        priority_queue.push(std::move(mNodeTmp));
+      }
     }
   }
 
@@ -274,127 +281,74 @@ bool WallVisualizer::OptimizeBuildOrder() {
   return false;
 }
 
-bool WallVisualizer::GenerateBrickPlacementNeighbors(auto &g_scores,
-                                                     auto &came_from,
-                                                     auto &priority_queue,
-                                                     const Node &current_node) {
+std::vector<State> &WallVisualizer::GetPrunedStates(const State &state) {
+  mStatesTmp.clear();
+  mPrunedStatesTmp.clear();
 
-  const RobotPosition &robot_pos =
-      mAllRobotPositions[current_node.state.robotPositionIdx];
+  for (size_t i = 0; i < mAllRobotPositions.size(); ++i) {
+    mStatesTmp.push_back(CreateBrickPlacementState(
+        State(i, state.placedBricksIdx, state.nrOfPlacedBricks)));
+  }
+
+  return PruneStates(mStatesTmp, mPrunedStatesTmp);
+}
+
+std::vector<State> &
+WallVisualizer::PruneStates(const std::vector<State> &states,
+                            std::vector<State> &result) {
+
+  size_t highest_nr_of_placed_bricks = 0;
+  for (const auto &state : states) {
+
+    if (state.nrOfPlacedBricks > 0) {
+      if (state.nrOfPlacedBricks > highest_nr_of_placed_bricks) {
+        // Found new max - clear old positions and start fresh
+        highest_nr_of_placed_bricks = state.nrOfPlacedBricks;
+        result.clear();
+        result.push_back(state);
+      } else if (state.nrOfPlacedBricks == highest_nr_of_placed_bricks) {
+        result.push_back(state);
+      }
+    }
+  }
+  return result;
+}
+
+State WallVisualizer::CreateBrickPlacementState(const State &state) {
+  const RobotPosition &robot_pos = mAllRobotPositions[state.robotPositionIdx];
 
   const auto &reachable_bricks = robot_pos.reachableBricks;
 
-  std::bitset<MAX_BRICKS> current_bricks =
-      mBitsetTable[current_node.state.placedBricksIdx];
+  std::bitset<MAX_BRICKS> current_bricks = mBitsetTable[state.placedBricksIdx];
 
-  bool can_place_any = false;
-  for (const auto &brick : reachable_bricks) {
-    // Check if already placed
-    if (current_bricks.test(brick.index)) {
-      continue;
-    }
+  std::bitset<MAX_BRICKS> new_placed_bricks = current_bricks;
 
-    // Check support
-    if (!IsBrickFullySupported(brick, current_bricks)) {
-      continue;
-    }
+  auto nr_of_placed = state.nrOfPlacedBricks;
 
-    can_place_any = true;
+  bool placed_any = true;
+  while (placed_any) {
+    placed_any = false;
+    for (const auto &brick : reachable_bricks) {
 
-    std::bitset<MAX_BRICKS> new_placed = current_bricks;
-
-    new_placed.set(brick.index);
-
-    size_t newBitsetIdx = GetOrCreateBitsetIndex(new_placed);
-
-    State newState(current_node.state.robotPositionIdx, newBitsetIdx,
-                   current_node.state.nrOfPlacedBricks + 1);
-    auto new_cost = current_node.cost;
-
-    auto it = g_scores.find(newState);
-    if (it == g_scores.end() || new_cost < it->second) {
-
-      int64_t brickArea = (brick.brickType == BrickType::FULL)
-                              ? mConfig.fullBrickArea
-                              : mConfig.halfBrickArea;
-      int64_t newRemainingArea =
-          std::max(uint64_t(0), current_node.remainingArea - brickArea);
-
-      mNodeTmp.cost = new_cost;
-      mNodeTmp.estimatedTotalCost = new_cost + CalculateHeuristic(newState);
-      mNodeTmp.state = newState;
-      mNodeTmp.currentStrideId = current_node.currentStrideId;
-      mNodeTmp.remainingArea = newRemainingArea;
-
-      g_scores[mNodeTmp.state] = mNodeTmp.cost;
-      came_from[newState] = current_node.state;
-      priority_queue.push(std::move(mNodeTmp));
-    }
-  }
-  return can_place_any;
-}
-
-void WallVisualizer::GenerateMovementNeighbors(auto &g_scores, auto &came_from,
-                                               auto &priority_queue,
-                                               const Node &current_node) {
-
-  std::bitset<MAX_BRICKS> current_bricks =
-      mBitsetTable[current_node.state.placedBricksIdx];
-
-  mRobotPosIdxWithMaxPlaceableBricksTmp.clear();
-  size_t max_placeable = 0;
-
-  for (size_t i = 0; i < mAllRobotPositions.size(); ++i) {
-    if (i == current_node.state.robotPositionIdx) {
-      continue;
-    }
-
-    size_t placeable_count = 0;
-    for (const auto &reachable_brick : mAllRobotPositions[i].reachableBricks) {
-      if (!current_bricks.test(reachable_brick.index) &&
-          IsBrickFullySupported(reachable_brick, current_bricks)) {
-        placeable_count++;
+      // Check if already placed
+      if (new_placed_bricks.test(brick.index)) {
+        continue;
       }
-    }
 
-    if (placeable_count > 0) {
-      if (placeable_count > max_placeable) {
-        // Found new max - clear old positions and start fresh
-        max_placeable = placeable_count;
-        mRobotPosIdxWithMaxPlaceableBricksTmp.clear();
-        mRobotPosIdxWithMaxPlaceableBricksTmp.push_back(i);
-      } else if (placeable_count == max_placeable) {
-        // Ties with current max
-        mRobotPosIdxWithMaxPlaceableBricksTmp.push_back(i);
-        if (mRobotPosIdxWithMaxPlaceableBricksTmp.size() >=
-            MAX_MOVEMENT_NEIGHBORS) {
-          break;
-        }
+      // Check support
+      if (!IsBrickFullySupported(brick, new_placed_bricks)) {
+        continue;
       }
+
+      placed_any = true;
+
+      new_placed_bricks.set(brick.index);
+      nr_of_placed += 1;
     }
   }
 
-  for (auto i : mRobotPosIdxWithMaxPlaceableBricksTmp) {
-
-    State newState(i, current_node.state.placedBricksIdx,
-                   current_node.state.nrOfPlacedBricks);
-
-    auto new_cost = current_node.cost + 1.0;
-
-    auto it = g_scores.find(newState);
-    if (it == g_scores.end() || new_cost < it->second) {
-      mNodeTmp.cost = new_cost;
-      mNodeTmp.estimatedTotalCost =
-          new_cost + CalculateHeuristic(current_node.state);
-      mNodeTmp.state = newState;
-      mNodeTmp.currentStrideId = current_node.currentStrideId + 1;
-      mNodeTmp.remainingArea = current_node.remainingArea;
-
-      g_scores[mNodeTmp.state] = mNodeTmp.cost;
-      came_from[newState] = current_node.state;
-      priority_queue.push(std::move(mNodeTmp));
-    }
-  }
+  size_t newBitsetIdx = GetOrCreateBitsetIndex(new_placed_bricks);
+  return State(state.robotPositionIdx, newBitsetIdx, nr_of_placed);
 }
 
 double WallVisualizer::CalculateHeuristic(const State &state) const {
@@ -548,15 +502,15 @@ void WallVisualizer::Visualize(
 
       if (builtBricks.count(brick.coordinate)) {
         if (brick.brickType == BrickType::FULL) {
-          line += strideColor + "▓▓▓▓" + color_codes::RESET + " ";
+          line += strideColor + "▓▓▓▓ " + color_codes::RESET;
         } else {
-          line += strideColor + "▓▓" + color_codes::RESET + " ";
+          line += strideColor + "▓▓ " + color_codes::RESET;
         }
       } else {
         if (brick.brickType == BrickType::FULL) {
-          line += color_codes::GRAY + "░░░░" + color_codes::RESET + "  ";
+          line += color_codes::GRAY + "░░░░ " + color_codes::RESET;
         } else {
-          line += color_codes::GRAY + "░░" + color_codes::RESET + " ";
+          line += color_codes::GRAY + "░░ " + color_codes::RESET;
         }
       }
     }
@@ -579,25 +533,31 @@ void WallVisualizer::ReconstructPath(
     path.push_back(current);
     current = came_from.at(current);
   }
-  path.push_back(current); // Add start state
+  path.push_back(current);
 
-  // Reverse to get start to goal
   std::reverse(path.begin(), path.end());
 
   int stride_id = 0;
-  for (size_t i = 1; i < path.size(); ++i) {
-    const State &prev_state = path[i - 1];
+
+  for (size_t i = 0; i < path.size(); ++i) {
     const State &current_state = path[i];
 
-    // Check if robot moved
-    if (prev_state.robotPositionIdx != current_state.robotPositionIdx) {
-      stride_id++;
+    // Get previous state (or empty bitset for first state)
+    std::bitset<MAX_BRICKS> prev_bricks;
+    if (i > 0) {
+      prev_bricks = mBitsetTable[path[i - 1].placedBricksIdx];
+
+      // Check if robot moved
+      if (path[i - 1].robotPositionIdx != current_state.robotPositionIdx) {
+        stride_id++;
+      }
     }
 
-    // Find which bricks were placed
+    std::bitset<MAX_BRICKS> current_bricks =
+        mBitsetTable[current_state.placedBricksIdx];
+
     for (size_t brickIdx = 0; brickIdx < mTotalBricks; ++brickIdx) {
-      if (!(mBitsetTable[prev_state.placedBricksIdx]).test(brickIdx) &&
-          (mBitsetTable[current_state.placedBricksIdx]).test(brickIdx)) {
+      if (!prev_bricks.test(brickIdx) && current_bricks.test(brickIdx)) {
         // Find the brick
         for (const auto &course : mWall) {
           for (const auto &brick : course) {
@@ -625,41 +585,41 @@ void WallVisualizer::RunInteractiveBuild(BondType bond_type) {
     return;
   }
 
-  // std::cout << "Press ENTER to place next brick, 'q' to quit" << std::endl;
+  std::cout << "Press ENTER to place next brick, 'q' to quit" << std::endl;
 
-  // std::unordered_set<Coordinate, CoordinateHash> builtBricks;
+  std::unordered_set<Coordinate, CoordinateHash> builtBricks;
 
-  // for (size_t idx = 0; idx < mBuildOrder.size(); ++idx) {
-  //   const auto &brick = mBuildOrder[idx];
+  for (size_t idx = 0; idx < mBuildOrder.size(); ++idx) {
+    const auto &brick = mBuildOrder[idx];
 
-  //   std::cout << "\n[" << (idx + 1) << "/" << mBuildOrder.size() << "] "
-  //             << "Place "
-  //             << (brick.brickType == BrickType::FULL ? "FULL" : "HALF")
-  //             << " brick at row " << brick.coordinate.row << ", col "
-  //             << brick.coordinate.column << "? ";
+    std::cout << "\n[" << (idx + 1) << "/" << mBuildOrder.size() << "] "
+              << "Place "
+              << (brick.brickType == BrickType::FULL ? "FULL" : "HALF")
+              << " brick at row " << brick.coordinate.row << ", col "
+              << brick.coordinate.column << "? ";
 
-  //   std::string userInput;
-  //   std::getline(std::cin, userInput);
+    std::string userInput;
+    std::getline(std::cin, userInput);
 
-  //   // Trim whitespace and convert to lowercase
-  //   userInput.erase(0, userInput.find_first_not_of(" \t\n\r"));
-  //   userInput.erase(userInput.find_last_not_of(" \t\n\r") + 1);
-  //   std::transform(userInput.begin(), userInput.end(), userInput.begin(),
-  //                  ::tolower);
+    // Trim whitespace and convert to lowercase
+    userInput.erase(0, userInput.find_first_not_of(" \t\n\r"));
+    userInput.erase(userInput.find_last_not_of(" \t\n\r") + 1);
+    std::transform(userInput.begin(), userInput.end(), userInput.begin(),
+                   ::tolower);
 
-  //   if (userInput == "q") {
-  //     std::cout << "Build stopped" << std::endl;
-  //     break;
-  //   } else {
-  //     builtBricks.insert(
-  //         Coordinate(brick.coordinate.row, brick.coordinate.column));
-  //     Visualize(builtBricks);
-  //   }
-  // }
+    if (userInput == "q") {
+      std::cout << "Build stopped" << std::endl;
+      break;
+    } else {
+      builtBricks.insert(
+          Coordinate(brick.coordinate.row, brick.coordinate.column));
+      Visualize(builtBricks);
+    }
+  }
 
-  // std::cout << "\nPress ENTER to end program";
-  // std::string userInput;
-  // std::getline(std::cin, userInput);
+  std::cout << "\nPress ENTER to end program";
+  std::string userInput;
+  std::getline(std::cin, userInput);
 }
 
 } // namespace wall_visualizer
