@@ -1,15 +1,15 @@
 #pragma once
 
+#include "lib/toml.hpp"
 #include <bitset>
 #include <cstdint>
 #include <functional>
+#include <set>
 #include <unordered_set>
 
 namespace wall_visualizer {
 
-const size_t MAX_MOVEMENT_NEIGHBORS = 1000;
-
-constexpr size_t MAX_BRICKS = 512;
+constexpr size_t MAX_BRICKS = 1024;
 
 enum class BrickType { FULL, HALF };
 
@@ -77,6 +77,8 @@ struct Wall {
 };
 
 struct Config {
+  uint64_t topXBrickCount = 0;
+
   Wall wall;
   BrickDimension fullBrickDimension;
   BrickDimension halfBrickDimension;
@@ -121,12 +123,15 @@ struct RobotPosition {
 struct State {
   size_t robotPositionIdx = 0;
   size_t placedBricksIdx = 0; // Index into mBitsetTable
-  uint64_t nrOfPlacedBricks = 0;
+  size_t nrOfPlacedBricks = 0;
+  size_t builtArea = 0;
 
-  State() : robotPositionIdx(0), placedBricksIdx(0), nrOfPlacedBricks(0) {}
-  State(int posIdx, size_t bricksIdx, size_t nrPlaced)
-      : robotPositionIdx(posIdx), placedBricksIdx(bricksIdx),
-        nrOfPlacedBricks(nrPlaced) {}
+  State()
+      : robotPositionIdx(0), placedBricksIdx(0), nrOfPlacedBricks(0),
+        builtArea(0) {}
+  State(size_t pos_idx, size_t bricks_idx, size_t nr_placed, size_t built_area)
+      : robotPositionIdx(pos_idx), placedBricksIdx(bricks_idx),
+        nrOfPlacedBricks(nr_placed), builtArea(built_area) {}
 
   bool operator==(const State &other) const {
     return robotPositionIdx == other.robotPositionIdx &&
@@ -136,7 +141,9 @@ struct State {
 
 struct StateHash {
   std::size_t operator()(const State &state) const {
-    return state.robotPositionIdx + (state.placedBricksIdx << 16);
+    std::size_t h1 = std::hash<size_t>{}(state.robotPositionIdx);
+    std::size_t h2 = std::hash<size_t>{}(state.placedBricksIdx);
+    return h1 ^ (h2 << 1);
   }
 };
 
@@ -159,15 +166,13 @@ public:
   void RunInteractiveBuild(BondType bond_type);
 
 private:
-  std::vector<Node> mNeighborsTmp;
-  Node mNodeTmp;
   Config mConfig;
+  std::set<uint64_t, std::greater<uint64_t>> mUniqueCountsTmp;
+  std::unordered_set<uint64_t> mTopCountsTmp;
 
-  uint64_t mMaxBricksAtOnce = 0;
   std::vector<std::vector<Brick>> mWall;
   std::vector<Brick> mBuildOrder;
 
-  std::vector<size_t> mRobotPosIdxWithMaxPlaceableBricksTmp;
   std::vector<State> mStatesTmp;
   std::vector<State> mPrunedStatesTmp;
 
@@ -176,42 +181,30 @@ private:
   std::vector<std::bitset<MAX_BRICKS>> mBitsetTable;
   std::unordered_map<std::bitset<MAX_BRICKS>, size_t> mBitsetToIndex;
 
-  uint64_t mTotalBricks = 0;
-  uint64_t mTotalWallArea = 0;
+  size_t mTotalBricks = 0;
+  size_t mTotalWallArea = 0;
 
-  // Caches
-  std::unordered_map<Position, std::unordered_set<Coordinate, CoordinateHash>,
-                     PositionHash>
-      mReachabilityCache;
+  template <typename T>
+  T GetConfigValue(const toml::table &table, const std::string &section,
+                   const std::string &key) {
+    auto section_table = table[section];
+    if (!section_table) {
+      throw std::runtime_error("Missing [" + section +
+                               "] section in config file");
+    }
 
-  Config LoadConfig(const std::string &fileName);
-  size_t ConvertMMtoUM(double value);
+    auto value_opt = section_table[key].value<T>();
+    if (!value_opt) {
+      throw std::runtime_error("Missing or invalid '" + key + "' in [" +
+                               section + "] section");
+    }
 
-  void CreateLayout(BondType bondType);
-  void CreateStretcherLayout();
+    return value_opt.value();
+  }
 
-  bool OptimizeBuildOrder();
-  std::vector<State> &PruneStates(const std::vector<State> &states,
-                                  std::vector<State> &result);
-  std::vector<State> &GetPrunedStates(const State &state);
-  void InitializeRobotPositions();
-  void PrecomputeSupportDependencies();
-  std::vector<Brick> CalculateReachableBricks(const Position &position);
-
-  bool IsBrickFullySupported(const Brick &brick,
-                             const std::bitset<MAX_BRICKS> &placedBricksBitset);
-  bool CalculateBrickInReach(const Brick &brick, const Position &robotPosition);
-
-  State CreateBrickPlacementState(const State &state);
-  double CalculateHeuristic(const State &state) const;
-  void
-  ReconstructPath(const std::unordered_map<State, State, StateHash> &came_from,
-                  State goalState);
-  void
-  Visualize(const std::unordered_set<Coordinate, CoordinateHash> &builtBricks);
-  void ClearTerminal();
-
-  int CountSetBits(size_t n) const { return __builtin_popcountll(n); }
+  inline size_t ConvertMMtoUM(double value) const {
+    return static_cast<size_t>(std::round(value * 1000.0));
+  }
 
   inline size_t GetOrCreateBitsetIndex(const std::bitset<MAX_BRICKS> &bitset) {
     auto it = mBitsetToIndex.find(bitset);
@@ -224,6 +217,33 @@ private:
     mBitsetToIndex[bitset] = newIndex;
     return newIndex;
   }
+
+  Config LoadConfig(const std::string &file_name);
+  bool OptimizeBuildOrder();
+  void CreateLayout(BondType bond_type);
+  void CreateStretcherLayout();
+
+  std::vector<State> &PruneStates(const std::vector<State> &states,
+                                  std::vector<State> &result);
+  std::vector<State> &GetPrunedStates(const State &state);
+  void InitializeRobotPositions();
+  void PrecomputeSupportDependencies();
+  std::vector<Brick> CalculateReachableBricks(const Position &position);
+
+  bool
+  IsBrickFullySupported(const Brick &brick,
+                        const std::bitset<MAX_BRICKS> &placed_bricks_bitset);
+  bool CalculateBrickInReach(const Brick &brick,
+                             const Position &robot_position);
+
+  State CreateBrickPlacementState(const State &state);
+  double CalculateHeuristic(const State &state) const;
+  void
+  ReconstructPath(const std::unordered_map<State, State, StateHash> &came_from,
+                  State goal_state);
+  void
+  Visualize(const std::unordered_set<Coordinate, CoordinateHash> &built_bricks);
+  void ClearTerminal();
 };
 
 } // namespace wall_visualizer

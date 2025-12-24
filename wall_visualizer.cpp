@@ -1,10 +1,9 @@
 #include "wall_visualizer.hpp"
-#include "lib/toml.hpp"
 #include <algorithm>
 #include <bitset>
 #include <cassert>
-#include <cstdint>
 #include <iostream>
+
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -34,7 +33,6 @@ std::string GetStrideColor(int stride_id) {
 WallVisualizer::WallVisualizer(const std::string &config_path)
     : mTotalBricks(0), mTotalWallArea(0) {
   mConfig = LoadConfig(config_path);
-  mRobotPosIdxWithMaxPlaceableBricksTmp.reserve(10 * 1024);
 }
 
 Config WallVisualizer::LoadConfig(const std::string &file_path) {
@@ -47,51 +45,38 @@ Config WallVisualizer::LoadConfig(const std::string &file_path) {
   }
 
   Config config;
-  auto getDoubleValue = [&](const std::string &section,
-                            const std::string &key) -> double {
-    auto section_table = table[section];
-    if (!section_table) {
-      throw std::runtime_error("Missing [" + section +
-                               "] section in config file");
-    }
 
-    auto value_opt = section_table[key].value<double>();
-    if (!value_opt) {
-      throw std::runtime_error("Missing or invalid '" + key + "' in [" +
-                               section + "] section");
-    }
-
-    return value_opt.value();
-  };
-
-  // Now use it for all config values
   try {
-    config.wall.length = ConvertMMtoUM(getDoubleValue("WALL", "length_mm"));
-    config.wall.height = ConvertMMtoUM(getDoubleValue("WALL", "height_mm"));
+    config.topXBrickCount = GetConfigValue<uint64_t>(
+        table, "PARAMETERS", "top_x_brick_count_to_keep");
+    config.wall.length =
+        ConvertMMtoUM(GetConfigValue<double>(table, "WALL", "length_mm"));
+    config.wall.height =
+        ConvertMMtoUM(GetConfigValue<double>(table, "WALL", "height_mm"));
 
     config.fullBrickDimension.length =
-        ConvertMMtoUM(getDoubleValue("FULL_BRICK", "length_mm"));
+        ConvertMMtoUM(GetConfigValue<double>(table, "FULL_BRICK", "length_mm"));
     config.fullBrickDimension.height =
-        ConvertMMtoUM(getDoubleValue("FULL_BRICK", "height_mm"));
+        ConvertMMtoUM(GetConfigValue<double>(table, "FULL_BRICK", "height_mm"));
     config.fullBrickDimension.width =
-        ConvertMMtoUM(getDoubleValue("FULL_BRICK", "width_mm"));
+        ConvertMMtoUM(GetConfigValue<double>(table, "FULL_BRICK", "width_mm"));
 
     config.halfBrickDimension.length =
-        ConvertMMtoUM(getDoubleValue("HALF_BRICK", "length_mm"));
+        ConvertMMtoUM(GetConfigValue<double>(table, "HALF_BRICK", "length_mm"));
     config.halfBrickDimension.height =
-        ConvertMMtoUM(getDoubleValue("HALF_BRICK", "height_mm"));
+        ConvertMMtoUM(GetConfigValue<double>(table, "HALF_BRICK", "height_mm"));
     config.halfBrickDimension.width =
-        ConvertMMtoUM(getDoubleValue("HALF_BRICK", "width_mm"));
+        ConvertMMtoUM(GetConfigValue<double>(table, "HALF_BRICK", "width_mm"));
 
     config.jointSize.head =
-        ConvertMMtoUM(getDoubleValue("JOINT_SIZE", "head_mm"));
+        ConvertMMtoUM(GetConfigValue<double>(table, "JOINT_SIZE", "head_mm"));
     config.jointSize.bed =
-        ConvertMMtoUM(getDoubleValue("JOINT_SIZE", "bed_mm"));
+        ConvertMMtoUM(GetConfigValue<double>(table, "JOINT_SIZE", "bed_mm"));
 
     config.envelope.length =
-        ConvertMMtoUM(getDoubleValue("ENVELOPE", "length_mm"));
+        ConvertMMtoUM(GetConfigValue<double>(table, "ENVELOPE", "length_mm"));
     config.envelope.height =
-        ConvertMMtoUM(getDoubleValue("ENVELOPE", "height_mm"));
+        ConvertMMtoUM(GetConfigValue<double>(table, "ENVELOPE", "height_mm"));
 
   } catch (const std::exception &e) {
     throw std::runtime_error(std::string("Config parsing error: ") + e.what());
@@ -100,20 +85,10 @@ Config WallVisualizer::LoadConfig(const std::string &file_path) {
   return config;
 }
 
-size_t WallVisualizer::ConvertMMtoUM(double value) {
-  return static_cast<size_t>(std::round(value * 1000.0));
-}
-
-void WallVisualizer::CreateLayout(BondType bondType) {
-  size_t nr_of_bricks_h =
-      round(mConfig.envelope.length / mConfig.fullBrickDimension.length);
-  switch (bondType) {
+void WallVisualizer::CreateLayout(BondType bond_type) {
+  switch (bond_type) {
   case BondType::STRETCHER:
     CreateStretcherLayout();
-
-    mMaxBricksAtOnce = nr_of_bricks_h * (nr_of_bricks_h + 1);
-    std::cout << "max at once: " << mMaxBricksAtOnce << std::endl;
-
     break;
   default:
     throw std::runtime_error("Bond type not implemented");
@@ -194,8 +169,6 @@ void WallVisualizer::CreateStretcherLayout() {
 bool WallVisualizer::OptimizeBuildOrder() {
   std::cout << "Total robot positions: " << mAllRobotPositions.size()
             << std::endl;
-  std::cout << "Total bricks: " << mTotalBricks << std::endl;
-  std::cout << "Total wall area: " << mTotalWallArea << std::endl;
 
   mBitsetTable.clear();
 
@@ -209,7 +182,7 @@ bool WallVisualizer::OptimizeBuildOrder() {
 
   size_t startBitsetIdx = GetOrCreateBitsetIndex(std::bitset<MAX_BRICKS>());
 
-  auto starting_state = State(0, startBitsetIdx, 0);
+  auto starting_state = State(0, startBitsetIdx, 0, 0);
   auto &pruned_states = GetPrunedStates(starting_state);
   for (auto const &state : pruned_states) {
     Node start_node;
@@ -229,11 +202,11 @@ bool WallVisualizer::OptimizeBuildOrder() {
 
     nodes_explored++;
 
-    if (nodes_explored % 1000 == 0) {
+    if (nodes_explored % 10000 == 0) {
       size_t nrPlaced = current_node.state.nrOfPlacedBricks;
       std::cout << std::fixed << std::setprecision(2);
       std::cout << "Explored " << nodes_explored << ", placed " << nrPlaced
-                << "/" << mTotalBricks << ", cost " << current_node.cost
+                << "/" << mTotalBricks << ", g(n) " << current_node.cost
                 << ", f(n)=" << current_node.estimatedTotalCost
                 << ", h(n)=" << CalculateHeuristic(current_node.state)
                 << ", queue " << priority_queue.size() << std::endl;
@@ -265,14 +238,15 @@ bool WallVisualizer::OptimizeBuildOrder() {
     for (auto const &state : pruned_states) {
       auto it = g_scores.find(state);
       if (it == g_scores.end() || new_cost < it->second) {
-        mNodeTmp.cost = new_cost;
-        mNodeTmp.estimatedTotalCost = new_cost + CalculateHeuristic(state);
-        mNodeTmp.state = state;
-        mNodeTmp.currentStrideId = current_node.currentStrideId + 1;
+        Node node;
+        node.cost = new_cost;
+        node.estimatedTotalCost = new_cost + CalculateHeuristic(state);
+        node.state = state;
+        node.currentStrideId = current_node.currentStrideId + 1;
 
-        g_scores[mNodeTmp.state] = mNodeTmp.cost;
+        g_scores[node.state] = node.cost;
         came_from[state] = current_node.state;
-        priority_queue.push(std::move(mNodeTmp));
+        priority_queue.push(std::move(node));
       }
     }
   }
@@ -286,8 +260,8 @@ std::vector<State> &WallVisualizer::GetPrunedStates(const State &state) {
   mPrunedStatesTmp.clear();
 
   for (size_t i = 0; i < mAllRobotPositions.size(); ++i) {
-    mStatesTmp.push_back(CreateBrickPlacementState(
-        State(i, state.placedBricksIdx, state.nrOfPlacedBricks)));
+    mStatesTmp.push_back(CreateBrickPlacementState(State(
+        i, state.placedBricksIdx, state.nrOfPlacedBricks, state.builtArea)));
   }
 
   return PruneStates(mStatesTmp, mPrunedStatesTmp);
@@ -296,19 +270,25 @@ std::vector<State> &WallVisualizer::GetPrunedStates(const State &state) {
 std::vector<State> &
 WallVisualizer::PruneStates(const std::vector<State> &states,
                             std::vector<State> &result) {
+  mUniqueCountsTmp.clear();
+  mTopCountsTmp.clear();
 
-  size_t highest_nr_of_placed_bricks = 0;
   for (const auto &state : states) {
-
     if (state.nrOfPlacedBricks > 0) {
-      if (state.nrOfPlacedBricks > highest_nr_of_placed_bricks) {
-        // Found new max - clear old positions and start fresh
-        highest_nr_of_placed_bricks = state.nrOfPlacedBricks;
-        result.clear();
-        result.push_back(state);
-      } else if (state.nrOfPlacedBricks == highest_nr_of_placed_bricks) {
-        result.push_back(state);
-      }
+      mUniqueCountsTmp.insert(state.nrOfPlacedBricks);
+    }
+  }
+
+  uint64_t count = 0;
+  for (const auto &value : mUniqueCountsTmp) {
+    if (count++ >= mConfig.topXBrickCount)
+      break;
+    mTopCountsTmp.insert(value);
+  }
+
+  for (const auto &state : states) {
+    if (mTopCountsTmp.count(state.nrOfPlacedBricks) > 0) {
+      result.push_back(state);
     }
   }
   return result;
@@ -324,6 +304,7 @@ State WallVisualizer::CreateBrickPlacementState(const State &state) {
   std::bitset<MAX_BRICKS> new_placed_bricks = current_bricks;
 
   auto nr_of_placed = state.nrOfPlacedBricks;
+  auto built_area = state.builtArea;
 
   bool placed_any = true;
   while (placed_any) {
@@ -343,20 +324,25 @@ State WallVisualizer::CreateBrickPlacementState(const State &state) {
       placed_any = true;
 
       new_placed_bricks.set(brick.index);
+      built_area += (brick.brickType == BrickType::FULL)
+                        ? mConfig.fullBrickArea
+                        : mConfig.halfBrickArea;
       nr_of_placed += 1;
     }
   }
 
   size_t newBitsetIdx = GetOrCreateBitsetIndex(new_placed_bricks);
-  return State(state.robotPositionIdx, newBitsetIdx, nr_of_placed);
+  return State(state.robotPositionIdx, newBitsetIdx, nr_of_placed, built_area);
 }
 
 double WallVisualizer::CalculateHeuristic(const State &state) const {
+  auto remaining_area = mTotalWallArea - state.builtArea;
 
-  return static_cast<double>(mTotalBricks - state.nrOfPlacedBricks) /
-         (mMaxBricksAtOnce + 1); // adding 1 extra brick since it is better to
-                                 // underestimate the cost
+  return static_cast<double>(remaining_area) /
+         (static_cast<double>(mConfig.envelope.length) *
+          static_cast<double>(mConfig.envelope.height));
 }
+
 void WallVisualizer::InitializeRobotPositions() {
   mAllRobotPositions.clear();
 
@@ -378,8 +364,6 @@ void WallVisualizer::InitializeRobotPositions() {
       });
     }
   }
-
-  std::cout << "  Total positions: " << mAllRobotPositions.size() << std::endl;
 }
 void WallVisualizer::PrecomputeSupportDependencies() {
   for (size_t rowIdx = 0; rowIdx < mWall.size(); ++rowIdx) {
@@ -418,7 +402,7 @@ void WallVisualizer::PrecomputeSupportDependencies() {
 }
 
 bool WallVisualizer::IsBrickFullySupported(
-    const Brick &brick, const std::bitset<MAX_BRICKS> &placedBricksBitset) {
+    const Brick &brick, const std::bitset<MAX_BRICKS> &placed_bricks_bitset) {
 
   // Ground level or no dependencies
   if (brick.requiredSupportIndices.empty()) {
@@ -427,7 +411,7 @@ bool WallVisualizer::IsBrickFullySupported(
 
   // ALL required bricks must be placed
   for (auto reqBrickIndex : brick.requiredSupportIndices) {
-    if (!placedBricksBitset.test(reqBrickIndex)) {
+    if (!placed_bricks_bitset.test(reqBrickIndex)) {
       return false;
     }
   }
@@ -450,7 +434,7 @@ WallVisualizer::CalculateReachableBricks(const Position &position) {
 }
 
 bool WallVisualizer::CalculateBrickInReach(const Brick &brick,
-                                           const Position &robotPosition) {
+                                           const Position &robot_position) {
   int brickStart = brick.position.x;
   int brickLen = (brick.brickType == BrickType::FULL)
                      ? mConfig.fullBrickDimension.length
@@ -463,10 +447,10 @@ bool WallVisualizer::CalculateBrickInReach(const Brick &brick,
                         : mConfig.halfBrickDimension.height;
   int brickTopY = brickBottomY + brickHeight;
 
-  int hReachStart = robotPosition.x;
-  int hReachEnd = robotPosition.x + mConfig.envelope.length;
-  int vReachStart = robotPosition.y;
-  int vReachEnd = robotPosition.y + mConfig.envelope.height;
+  int hReachStart = robot_position.x;
+  int hReachEnd = robot_position.x + mConfig.envelope.length;
+  int vReachStart = robot_position.y;
+  int vReachEnd = robot_position.y + mConfig.envelope.height;
 
   bool hInReach = (brickStart >= hReachStart && brickEnd <= hReachEnd);
   bool vInReach = (brickBottomY >= vReachStart && brickTopY <= vReachEnd);
@@ -483,7 +467,7 @@ void WallVisualizer::ClearTerminal() {
 }
 
 void WallVisualizer::Visualize(
-    const std::unordered_set<Coordinate, CoordinateHash> &builtBricks) {
+    const std::unordered_set<Coordinate, CoordinateHash> &built_bricks) {
   ClearTerminal();
 
   std::unordered_map<Coordinate, int, CoordinateHash> brickStrideMap;
@@ -500,7 +484,7 @@ void WallVisualizer::Visualize(
       int strideId = (it != brickStrideMap.end()) ? it->second : 0;
       std::string strideColor = color_codes::GetStrideColor(strideId);
 
-      if (builtBricks.count(brick.coordinate)) {
+      if (built_bricks.count(brick.coordinate)) {
         if (brick.brickType == BrickType::FULL) {
           line += strideColor + "▓▓▓▓ " + color_codes::RESET;
         } else {
@@ -521,12 +505,12 @@ void WallVisualizer::Visualize(
 
 void WallVisualizer::ReconstructPath(
     const std::unordered_map<State, State, StateHash> &came_from,
-    State goalState) {
+    State goal_state) {
 
   mBuildOrder.clear();
 
   std::vector<State> path;
-  State current = goalState;
+  State current = goal_state;
 
   // Build path from goal to start
   while (came_from.find(current) != came_from.end()) {
