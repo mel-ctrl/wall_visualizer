@@ -7,6 +7,27 @@
 #include <set>
 #include <unordered_set>
 
+namespace color_codes {
+// ANSI color codes
+const std::string RED = "\033[91m";
+const std::string GREEN = "\033[92m";
+const std::string YELLOW = "\033[93m";
+const std::string BLUE = "\033[94m";
+const std::string MAGENTA = "\033[95m";
+const std::string CYAN = "\033[96m";
+const std::string ORANGE = "\033[38;5;208m";
+const std::string PURPLE = "\033[38;5;129m";
+const std::string PINK = "\033[38;5;213m";
+const std::string GRAY = "\033[90m";
+const std::string RESET = "\033[0m";
+
+inline std::string GetStrideColor(int stride_id) {
+  const std::vector<std::string> colors = {RED,  GREEN,  YELLOW, BLUE, MAGENTA,
+                                           CYAN, ORANGE, PURPLE, PINK, GRAY};
+  return colors[stride_id % colors.size()];
+}
+} // namespace color_codes
+
 namespace wall_visualizer {
 
 constexpr size_t MAX_BRICKS = 1024;
@@ -14,6 +35,8 @@ constexpr size_t MAX_BRICKS = 1024;
 enum class BrickType { FULL, HALF };
 
 enum class BondType { STRETCHER, ENGLISH_CROSS_BOND, WILD_BOND };
+
+enum class BrickOrientation { STRETCHER, HEADER };
 
 struct Position {
   int64_t x = 0;
@@ -77,7 +100,7 @@ struct Wall {
 };
 
 struct Config {
-  uint64_t topXBrickCount = 0;
+  size_t topXBrickCount = 0;
 
   Wall wall;
   BrickDimension fullBrickDimension;
@@ -86,15 +109,11 @@ struct Config {
   RobotEnvelope envelope;
 
   size_t courseHeight = 0;
-  size_t fullBrickWithJointLength = 0;
-  size_t halfBrickWithJointLength = 0;
   size_t fullBrickArea = 0;
   size_t halfBrickArea = 0;
 
   void ComputeDerivedValues() {
     courseHeight = fullBrickDimension.height + jointSize.bed;
-    fullBrickWithJointLength = fullBrickDimension.length + jointSize.head;
-    halfBrickWithJointLength = halfBrickDimension.length + jointSize.head;
     fullBrickArea = fullBrickDimension.length * fullBrickDimension.height;
     halfBrickArea = halfBrickDimension.length * halfBrickDimension.height;
   }
@@ -104,15 +123,37 @@ struct Brick {
   Coordinate coordinate;
   Position position;
   BrickType brickType = BrickType::FULL;
+  BrickOrientation orientation = BrickOrientation::STRETCHER;
   size_t strideId = 0;
   size_t index = 0;
-  std::vector<size_t> requiredSupportIndices; // these are indices too
+  std::vector<size_t> requiredSupportIndices;
 
-  Brick() : brickType(BrickType::FULL), strideId(0), index(0) {}
+  Brick() : strideId(0), index(0) {}
   Brick(const Coordinate &coord, const Position &pos, BrickType type,
-        int stride, size_t idx)
-      : coordinate(coord), position(pos), brickType(type), strideId(stride),
-        index(idx) {}
+        BrickOrientation orient, int stride, size_t idx)
+      : coordinate(coord), position(pos), brickType(type), orientation(orient),
+        strideId(stride), index(idx) {}
+
+  size_t GetLength(const Config &config) const {
+    if (orientation == BrickOrientation::HEADER) {
+      return (brickType == BrickType::FULL) ? config.fullBrickDimension.width
+                                            : config.halfBrickDimension.width;
+    } else if (orientation == BrickOrientation::STRETCHER) {
+      return (brickType == BrickType::FULL) ? config.fullBrickDimension.length
+                                            : config.halfBrickDimension.length;
+    }
+    throw std::runtime_error("[Brick::GetLength] Not known orientation");
+  }
+
+  size_t GetHeight(const Config &config) const {
+    return (brickType == BrickType::FULL) ? config.fullBrickDimension.height
+                                          : config.halfBrickDimension.height;
+  }
+
+  size_t GetArea(const Config &config) const {
+    return (brickType == BrickType::FULL) ? config.fullBrickArea
+                                          : config.halfBrickArea;
+  }
 };
 
 struct RobotPosition {
@@ -167,8 +208,8 @@ public:
 
 private:
   Config mConfig;
-  std::set<uint64_t, std::greater<uint64_t>> mUniqueCountsTmp;
-  std::unordered_set<uint64_t> mTopCountsTmp;
+  std::set<size_t, std::greater<size_t>> mUniqueCountsTmp;
+  std::unordered_set<size_t> mTopCountsTmp;
 
   std::vector<std::vector<Brick>> mWall;
   std::vector<Brick> mBuildOrder;
@@ -220,8 +261,12 @@ private:
 
   Config LoadConfig(const std::string &file_name);
   bool OptimizeBuildOrder();
+  size_t AddBrickToLayout(std::vector<Brick> &course, BrickType brickType,
+                          size_t row, size_t column, size_t x_pos,
+                          BrickOrientation orientation);
   void CreateLayout(BondType bond_type);
   void CreateStretcherLayout();
+  void CreateEnglishCrossBondLayout();
 
   std::vector<State> &PruneStates(const std::vector<State> &states,
                                   std::vector<State> &result);

@@ -2,37 +2,23 @@
 #include <algorithm>
 #include <bitset>
 #include <cassert>
+#include <cstdint>
 #include <iostream>
-
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
 namespace wall_visualizer {
 
-namespace color_codes {
-// ANSI color codes
-const std::string RED = "\033[91m";
-const std::string GREEN = "\033[92m";
-const std::string YELLOW = "\033[93m";
-const std::string BLUE = "\033[94m";
-const std::string MAGENTA = "\033[95m";
-const std::string CYAN = "\033[96m";
-const std::string ORANGE = "\033[38;5;208m";
-const std::string PURPLE = "\033[38;5;129m";
-const std::string PINK = "\033[38;5;213m";
-const std::string GRAY = "\033[90m";
-const std::string RESET = "\033[0m";
-
-std::string GetStrideColor(int stride_id) {
-  const std::vector<std::string> colors = {RED,  GREEN,  YELLOW, BLUE, MAGENTA,
-                                           CYAN, ORANGE, PURPLE, PINK, GRAY};
-  return colors[stride_id % colors.size()];
-}
-} // namespace color_codes
-
 WallVisualizer::WallVisualizer(const std::string &config_path)
-    : mTotalBricks(0), mTotalWallArea(0) {
+    : mWall(), mBuildOrder(), mStatesTmp(), mPrunedStatesTmp(),
+      mAllRobotPositions(), mBitsetTable(), mBitsetToIndex(), mTotalBricks(0),
+      mTotalWallArea(0) {
   mConfig = LoadConfig(config_path);
+  mTopCountsTmp.reserve(MAX_BRICKS);
+  mStatesTmp.reserve(100 * MAX_BRICKS);
+  mPrunedStatesTmp.reserve(100 * MAX_BRICKS);
+  mBitsetToIndex.reserve(100 * MAX_BRICKS);
 }
 
 Config WallVisualizer::LoadConfig(const std::string &file_path) {
@@ -47,8 +33,8 @@ Config WallVisualizer::LoadConfig(const std::string &file_path) {
   Config config;
 
   try {
-    config.topXBrickCount = GetConfigValue<uint64_t>(
-        table, "PARAMETERS", "top_x_brick_count_to_keep");
+    config.topXBrickCount = GetConfigValue<size_t>(table, "PARAMETERS",
+                                                   "top_x_brick_count_to_keep");
     config.wall.length =
         ConvertMMtoUM(GetConfigValue<double>(table, "WALL", "length_mm"));
     config.wall.height =
@@ -90,64 +76,68 @@ void WallVisualizer::CreateLayout(BondType bond_type) {
   case BondType::STRETCHER:
     CreateStretcherLayout();
     break;
+  case BondType::ENGLISH_CROSS_BOND:
+    // CreateEnglishCrossBondLayout();
+    break;
   default:
     throw std::runtime_error("Bond type not implemented");
   }
 }
 
+size_t WallVisualizer::AddBrickToLayout(std::vector<Brick> &course,
+                                        BrickType brickType, size_t row,
+                                        size_t column, size_t x_pos,
+                                        BrickOrientation orientation) {
+  Coordinate coordinate(row, column);
+  Position position(x_pos, row * mConfig.courseHeight);
+
+  Brick brick =
+      Brick(coordinate, position, brickType, orientation, 0, mTotalBricks);
+
+  mTotalWallArea += brick.GetArea(mConfig);
+  course.push_back(brick);
+  mTotalBricks++;
+
+  return brick.GetLength(mConfig) + mConfig.jointSize.head;
+}
+
 void WallVisualizer::CreateStretcherLayout() {
-  auto nrOfCourses = mConfig.wall.height / mConfig.courseHeight;
   mWall.clear();
   mTotalBricks = 0;
   mTotalWallArea = 0;
+  auto nr_of_courses = mConfig.wall.height / mConfig.courseHeight;
 
-  auto addBrick = [this](std::vector<Brick> &course, BrickType brickType,
-                         auto row, auto column, auto x_pos,
-                         size_t index) -> size_t {
-    Coordinate coordinate(row, column);
-    Position position(x_pos, row * mConfig.courseHeight);
-
-    course.push_back(Brick(coordinate, position, brickType, 0, index));
-
-    mTotalWallArea += (brickType == BrickType::FULL) ? mConfig.fullBrickArea
-                                                     : mConfig.halfBrickArea;
-
-    return (brickType == BrickType::HALF) ? mConfig.halfBrickWithJointLength
-                                          : mConfig.fullBrickWithJointLength;
-  };
-
-  for (size_t row = 0; row < nrOfCourses; ++row) {
+  for (size_t row = 0; row < nr_of_courses; ++row) {
     std::vector<Brick> course;
     size_t currentWidth = 0;
     size_t column = 0;
 
     if (row % 2 == 1) {
-      currentWidth += addBrick(course, BrickType::HALF, row, column,
-                               currentWidth, mTotalBricks);
-      mTotalBricks++;
+      currentWidth +=
+          AddBrickToLayout(course, BrickType::HALF, row, column, currentWidth,
+                           BrickOrientation::STRETCHER);
       column++;
     }
 
     while (currentWidth + mConfig.fullBrickDimension.length <=
            mConfig.wall.length) {
-      currentWidth += addBrick(course, BrickType::FULL, row, column,
-                               currentWidth, mTotalBricks);
-      mTotalBricks++;
+      currentWidth +=
+          AddBrickToLayout(course, BrickType::FULL, row, column, currentWidth,
+                           BrickOrientation::STRETCHER);
       column++;
     }
 
     if (currentWidth + mConfig.halfBrickDimension.length <=
         mConfig.wall.length) {
-      currentWidth += addBrick(course, BrickType::HALF, row, column,
-                               currentWidth, mTotalBricks);
-      mTotalBricks++;
+      currentWidth +=
+          AddBrickToLayout(course, BrickType::HALF, row, column, currentWidth,
+                           BrickOrientation::STRETCHER);
       column++;
     }
 
     mWall.push_back(std::move(course));
   }
 
-  PrecomputeSupportDependencies();
   std::cout << "\n=== BRICK LAYOUT DEBUG ===" << std::endl;
   for (size_t rowIdx = 0; rowIdx < std::min(size_t(2), mWall.size());
        ++rowIdx) {
@@ -166,6 +156,8 @@ void WallVisualizer::CreateStretcherLayout() {
   }
 }
 
+void CreateEnglishCrossBondLayout() {}
+
 bool WallVisualizer::OptimizeBuildOrder() {
   std::cout << "Total robot positions: " << mAllRobotPositions.size()
             << std::endl;
@@ -178,11 +170,11 @@ bool WallVisualizer::OptimizeBuildOrder() {
       priority_queue;
 
   std::unordered_map<State, double, StateHash> g_scores;
-  g_scores.reserve(1000000);
+  g_scores.reserve(10 * 1024);
 
-  size_t startBitsetIdx = GetOrCreateBitsetIndex(std::bitset<MAX_BRICKS>());
+  size_t start_bitset_idx = GetOrCreateBitsetIndex(std::bitset<MAX_BRICKS>());
 
-  auto starting_state = State(0, startBitsetIdx, 0, 0);
+  auto starting_state = State(0, start_bitset_idx, 0, 0);
   auto &pruned_states = GetPrunedStates(starting_state);
   for (auto const &state : pruned_states) {
     Node start_node;
@@ -203,10 +195,10 @@ bool WallVisualizer::OptimizeBuildOrder() {
     nodes_explored++;
 
     if (nodes_explored % 10000 == 0) {
-      size_t nrPlaced = current_node.state.nrOfPlacedBricks;
       std::cout << std::fixed << std::setprecision(2);
-      std::cout << "Explored " << nodes_explored << ", placed " << nrPlaced
-                << "/" << mTotalBricks << ", g(n) " << current_node.cost
+      std::cout << "Explored " << nodes_explored << ", placed "
+                << current_node.state.nrOfPlacedBricks << "/" << mTotalBricks
+                << ", g(n) " << current_node.cost
                 << ", f(n)=" << current_node.estimatedTotalCost
                 << ", h(n)=" << CalculateHeuristic(current_node.state)
                 << ", queue " << priority_queue.size() << std::endl;
@@ -219,12 +211,11 @@ bool WallVisualizer::OptimizeBuildOrder() {
     }
 
     // Goal check
-    size_t nrOfBricksPlaced = current_node.state.nrOfPlacedBricks;
-    if (nrOfBricksPlaced == mTotalBricks) {
+    if (current_node.state.nrOfPlacedBricks == mTotalBricks) {
       ReconstructPath(came_from, current_node.state);
       std::cout << "h(G): " << CalculateHeuristic(current_node.state)
                 << std::endl;
-      std::cout << "\n✓ Optimal solution found!" << std::endl;
+      std::cout << "\nOptimal solution found!" << std::endl;
       std::cout << "  Total cost: " << current_node.cost << std::endl;
       std::cout << "  Total strides: " << current_node.currentStrideId
                 << std::endl;
@@ -251,7 +242,7 @@ bool WallVisualizer::OptimizeBuildOrder() {
     }
   }
 
-  std::cout << "✗ No solution found!" << std::endl;
+  std::cout << "No solution found!" << std::endl;
   return false;
 }
 
@@ -279,7 +270,7 @@ WallVisualizer::PruneStates(const std::vector<State> &states,
     }
   }
 
-  uint64_t count = 0;
+  size_t count = 0;
   for (const auto &value : mUniqueCountsTmp) {
     if (count++ >= mConfig.topXBrickCount)
       break;
@@ -331,8 +322,9 @@ State WallVisualizer::CreateBrickPlacementState(const State &state) {
     }
   }
 
-  size_t newBitsetIdx = GetOrCreateBitsetIndex(new_placed_bricks);
-  return State(state.robotPositionIdx, newBitsetIdx, nr_of_placed, built_area);
+  size_t new_bitset_idx = GetOrCreateBitsetIndex(new_placed_bricks);
+  return State(state.robotPositionIdx, new_bitset_idx, nr_of_placed,
+               built_area);
 }
 
 double WallVisualizer::CalculateHeuristic(const State &state) const {
@@ -346,17 +338,17 @@ double WallVisualizer::CalculateHeuristic(const State &state) const {
 void WallVisualizer::InitializeRobotPositions() {
   mAllRobotPositions.clear();
 
-  int hStep = mConfig.halfBrickDimension.length;
-  int vStep = mConfig.courseHeight;
+  size_t h_step = mConfig.halfBrickDimension.length;
+  size_t v_step = mConfig.courseHeight;
 
-  int hStart = 0;
-  int hEnd = mConfig.wall.length;
-  int vStart = 0;
-  int vEnd = mConfig.wall.height;
+  size_t h_start = 0;
+  size_t h_end = mConfig.wall.length;
+  size_t v_start = 0;
+  size_t v_end = mConfig.wall.height;
 
-  for (int hPos = hStart; hPos < hEnd; hPos += hStep) {
-    for (int vPos = vStart; vPos < vEnd; vPos += vStep) {
-      auto pos = Position(hPos, vPos);
+  for (size_t h_pos = h_start; h_pos < h_end; h_pos += h_step) {
+    for (size_t vPos = v_start; vPos < v_end; vPos += v_step) {
+      auto pos = Position(h_pos, vPos);
       ;
       mAllRobotPositions.emplace_back(RobotPosition{
           .position = pos,
@@ -366,35 +358,30 @@ void WallVisualizer::InitializeRobotPositions() {
   }
 }
 void WallVisualizer::PrecomputeSupportDependencies() {
-  for (size_t rowIdx = 0; rowIdx < mWall.size(); ++rowIdx) {
-    if (rowIdx == 0) {
-      // Ground level bricks have no dependencies - already empty
+  for (size_t row_idx = 0; row_idx < mWall.size(); ++row_idx) {
+    if (row_idx == 0) {
       continue;
     }
 
-    auto &course = mWall[rowIdx];
+    auto &course = mWall[row_idx];
     for (auto &brick : course) {
-      int brickStart = brick.position.x;
-      int brickLen = (brick.brickType == BrickType::FULL)
-                         ? mConfig.fullBrickDimension.length
-                         : mConfig.halfBrickDimension.length;
-      int brickEnd = brickStart + brickLen;
+      size_t brick_start = brick.position.x;
+      size_t brick_end = brick_start + brick.GetLength(mConfig);
 
-      const auto &courseBelow = mWall[rowIdx - 1];
+      const auto &course_below = mWall[row_idx - 1];
+      for (const auto &brick_below : course_below) {
+        size_t below_start = brick_below.position.x;
+        size_t below_end = below_start + brick_below.GetLength(mConfig) +
+                           mConfig.jointSize.head;
 
-      for (const auto &brickBelow : courseBelow) {
-        int belowStart = brickBelow.position.x;
-        int belowLen = (brickBelow.brickType == BrickType::FULL)
-                           ? mConfig.fullBrickDimension.length
-                           : mConfig.halfBrickDimension.length;
-        int belowEnd = belowStart + belowLen + mConfig.jointSize.head;
-
-        int overlapStart = std::max(brickStart, belowStart);
-        int overlapEnd = std::min(brickEnd, belowEnd);
-        int overlap = std::max(0, overlapEnd - overlapStart);
+        size_t overlap_start = std::max(brick_start, below_start);
+        size_t overlap_end = std::min(brick_end, below_end);
+        size_t overlap = std::max(static_cast<int64_t>(0),
+                                  static_cast<int64_t>(overlap_end) -
+                                      static_cast<int64_t>(overlap_start));
 
         if (overlap > 0) {
-          brick.requiredSupportIndices.push_back(brickBelow.index);
+          brick.requiredSupportIndices.push_back(brick_below.index);
         }
       }
     }
@@ -404,12 +391,10 @@ void WallVisualizer::PrecomputeSupportDependencies() {
 bool WallVisualizer::IsBrickFullySupported(
     const Brick &brick, const std::bitset<MAX_BRICKS> &placed_bricks_bitset) {
 
-  // Ground level or no dependencies
   if (brick.requiredSupportIndices.empty()) {
     return true;
   }
 
-  // ALL required bricks must be placed
   for (auto reqBrickIndex : brick.requiredSupportIndices) {
     if (!placed_bricks_bitset.test(reqBrickIndex)) {
       return false;
@@ -435,32 +420,24 @@ WallVisualizer::CalculateReachableBricks(const Position &position) {
 
 bool WallVisualizer::CalculateBrickInReach(const Brick &brick,
                                            const Position &robot_position) {
-  int brickStart = brick.position.x;
-  int brickLen = (brick.brickType == BrickType::FULL)
-                     ? mConfig.fullBrickDimension.length
-                     : mConfig.halfBrickDimension.length;
-  int brickEnd = brickStart + brickLen;
 
-  int brickBottomY = brick.position.y;
-  int brickHeight = (brick.brickType == BrickType::FULL)
-                        ? mConfig.fullBrickDimension.height
-                        : mConfig.halfBrickDimension.height;
-  int brickTopY = brickBottomY + brickHeight;
+  size_t brick_start = brick.position.x;
+  size_t brick_end = brick_start + brick.GetLength(mConfig);
 
-  int hReachStart = robot_position.x;
-  int hReachEnd = robot_position.x + mConfig.envelope.length;
-  int vReachStart = robot_position.y;
-  int vReachEnd = robot_position.y + mConfig.envelope.height;
+  size_t brick_bottom_y = brick.position.y;
+  size_t brick_top_y = brick_bottom_y + brick.GetHeight(mConfig);
 
-  bool hInReach = (brickStart >= hReachStart && brickEnd <= hReachEnd);
-  bool vInReach = (brickBottomY >= vReachStart && brickTopY <= vReachEnd);
+  size_t h_reach_start = robot_position.x;
+  size_t h_reach_end = robot_position.x + mConfig.envelope.length;
+  size_t v_reach_start = robot_position.y;
+  size_t v_reach_end = robot_position.y + mConfig.envelope.height;
 
-  return hInReach && vInReach;
+  bool h_in_reach = (brick_start >= h_reach_start && brick_end <= h_reach_end);
+  bool v_in_reach =
+      (brick_bottom_y >= v_reach_start && brick_top_y <= v_reach_end);
+
+  return h_in_reach && v_in_reach;
 }
-
-// ============================================================================
-// Visualization
-// ============================================================================
 
 void WallVisualizer::ClearTerminal() {
   std::cout << "\x1b[H\x1b[2J\x1b[3J" << std::flush;
@@ -485,13 +462,15 @@ void WallVisualizer::Visualize(
       std::string strideColor = color_codes::GetStrideColor(strideId);
 
       if (built_bricks.count(brick.coordinate)) {
-        if (brick.brickType == BrickType::FULL) {
+        if (brick.orientation != BrickOrientation::HEADER &&
+            brick.brickType == BrickType::FULL) {
           line += strideColor + "▓▓▓▓ " + color_codes::RESET;
         } else {
           line += strideColor + "▓▓ " + color_codes::RESET;
         }
       } else {
-        if (brick.brickType == BrickType::FULL) {
+        if (brick.orientation != BrickOrientation::HEADER &&
+            brick.brickType == BrickType::FULL) {
           line += color_codes::GRAY + "░░░░ " + color_codes::RESET;
         } else {
           line += color_codes::GRAY + "░░ " + color_codes::RESET;
@@ -540,15 +519,15 @@ void WallVisualizer::ReconstructPath(
     std::bitset<MAX_BRICKS> current_bricks =
         mBitsetTable[current_state.placedBricksIdx];
 
-    for (size_t brickIdx = 0; brickIdx < mTotalBricks; ++brickIdx) {
-      if (!prev_bricks.test(brickIdx) && current_bricks.test(brickIdx)) {
+    for (size_t brick_idx = 0; brick_idx < mTotalBricks; ++brick_idx) {
+      if (!prev_bricks.test(brick_idx) && current_bricks.test(brick_idx)) {
         // Find the brick
         for (const auto &course : mWall) {
           for (const auto &brick : course) {
-            if (brick.index == brickIdx) {
-              Brick buildBrick = brick;
-              buildBrick.strideId = stride_id;
-              mBuildOrder.push_back(buildBrick);
+            if (brick.index == brick_idx) {
+              Brick built_brick = brick;
+              built_brick.strideId = stride_id;
+              mBuildOrder.push_back(built_brick);
             }
           }
         }
@@ -561,6 +540,7 @@ void WallVisualizer::RunInteractiveBuild(BondType bond_type) {
   std::cout << "Visualizing for bond type STRETCHER" << std::endl;
 
   CreateLayout(bond_type);
+  PrecomputeSupportDependencies();
   InitializeRobotPositions();
 
   bool success = OptimizeBuildOrder();
@@ -571,7 +551,7 @@ void WallVisualizer::RunInteractiveBuild(BondType bond_type) {
 
   std::cout << "Press ENTER to place next brick, 'q' to quit" << std::endl;
 
-  std::unordered_set<Coordinate, CoordinateHash> builtBricks;
+  std::unordered_set<Coordinate, CoordinateHash> built_bricks;
 
   for (size_t idx = 0; idx < mBuildOrder.size(); ++idx) {
     const auto &brick = mBuildOrder[idx];
@@ -582,28 +562,27 @@ void WallVisualizer::RunInteractiveBuild(BondType bond_type) {
               << " brick at row " << brick.coordinate.row << ", col "
               << brick.coordinate.column << "? ";
 
-    std::string userInput;
-    std::getline(std::cin, userInput);
+    std::string user_input;
+    std::getline(std::cin, user_input);
 
-    // Trim whitespace and convert to lowercase
-    userInput.erase(0, userInput.find_first_not_of(" \t\n\r"));
-    userInput.erase(userInput.find_last_not_of(" \t\n\r") + 1);
-    std::transform(userInput.begin(), userInput.end(), userInput.begin(),
+    user_input.erase(0, user_input.find_first_not_of(" \t\n\r"));
+    user_input.erase(user_input.find_last_not_of(" \t\n\r") + 1);
+    std::transform(user_input.begin(), user_input.end(), user_input.begin(),
                    ::tolower);
 
-    if (userInput == "q") {
+    if (user_input == "q") {
       std::cout << "Build stopped" << std::endl;
       break;
     } else {
-      builtBricks.insert(
+      built_bricks.insert(
           Coordinate(brick.coordinate.row, brick.coordinate.column));
-      Visualize(builtBricks);
+      Visualize(built_bricks);
     }
   }
 
   std::cout << "\nPress ENTER to end program";
-  std::string userInput;
-  std::getline(std::cin, userInput);
+  std::string user_input;
+  std::getline(std::cin, user_input);
 }
 
 } // namespace wall_visualizer
