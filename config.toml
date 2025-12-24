@@ -1,3 +1,14 @@
+[PARAMETERS]
+top_x_brick_count_to_keep = 2   # Pruning strategy: Keep only robot positions that can place the top X distinct brick counts.
+                                # For example, if value = 2:
+                                #   - Position A can place 10 bricks (most)
+                                #   - Position B can place 10 bricks (most) 
+                                #   - Position C can place 8 bricks (second most)
+                                #   - Position D can place 5 bricks
+                                #   Result: Keep A, B, and C (all positions with top 2 distinct counts: 10 and 8)
+                                # Lower value = faster search, may sacrifice optimality
+                                # Set > total_bricks to disable pruning
+
 [WALL]
 length_mm = 2300 # 2300
 height_mm = 2000 # 2000
