@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <set>
+#include <stdexcept>
 #include <unordered_set>
 
 namespace color_codes {
@@ -19,11 +20,36 @@ const std::string ORANGE = "\033[38;5;208m";
 const std::string PURPLE = "\033[38;5;129m";
 const std::string PINK = "\033[38;5;213m";
 const std::string GRAY = "\033[90m";
+const std::string LIGHT_RED = "\033[38;5;203m";
+const std::string LIGHT_GREEN = "\033[38;5;120m";
+const std::string LIGHT_BLUE = "\033[38;5;117m";
+const std::string LIGHT_YELLOW = "\033[38;5;228m";
+const std::string LIGHT_CYAN = "\033[38;5;159m";
+const std::string LIGHT_MAGENTA = "\033[38;5;219m";
+const std::string DARK_RED = "\033[38;5;124m";
+const std::string DARK_GREEN = "\033[38;5;28m";
+const std::string DARK_BLUE = "\033[38;5;19m";
+const std::string DARK_YELLOW = "\033[38;5;178m";
+const std::string DARK_CYAN = "\033[38;5;31m";
+const std::string DARK_MAGENTA = "\033[38;5;90m";
+const std::string LIME = "\033[38;5;154m";
+const std::string TEAL = "\033[38;5;37m";
+const std::string LAVENDER = "\033[38;5;183m";
+const std::string CORAL = "\033[38;5;209m";
+const std::string PEACH = "\033[38;5;216m";
+const std::string MINT = "\033[38;5;121m";
+const std::string SKY_BLUE = "\033[38;5;111m";
+const std::string ROSE = "\033[38;5;211m";
 const std::string RESET = "\033[0m";
 
 inline std::string GetStrideColor(int stride_id) {
-  const std::vector<std::string> colors = {RED,  GREEN,  YELLOW, BLUE, MAGENTA,
-                                           CYAN, ORANGE, PURPLE, PINK, GRAY};
+  const std::vector<std::string> colors = {
+      RED,           GREEN,        YELLOW,     BLUE,         MAGENTA,
+      CYAN,          ORANGE,       PURPLE,     PINK,         GRAY,
+      LIGHT_RED,     LIGHT_GREEN,  LIGHT_BLUE, LIGHT_YELLOW, LIGHT_CYAN,
+      LIGHT_MAGENTA, DARK_RED,     DARK_GREEN, DARK_BLUE,    DARK_YELLOW,
+      DARK_CYAN,     DARK_MAGENTA, LIME,       TEAL,         LAVENDER,
+      CORAL,         PEACH,        MINT,       SKY_BLUE,     ROSE};
   return colors[stride_id % colors.size()];
 }
 } // namespace color_codes
@@ -35,6 +61,18 @@ constexpr size_t MAX_BRICKS = 1024;
 enum class BrickType { FULL, HALF };
 
 enum class BondType { STRETCHER, ENGLISH_CROSS_BOND, WILD_BOND };
+
+inline std::string BondTypeToString(BondType type) {
+  switch (type) {
+  case BondType::STRETCHER:
+    return "stretcher";
+  case BondType::ENGLISH_CROSS_BOND:
+    return "english cross bond";
+  case BondType::WILD_BOND:
+    return "wild bond";
+  }
+  throw std::runtime_error("[BondTypeToString] unknown bond type");
+}
 
 enum class BrickOrientation { STRETCHER, HEADER };
 
@@ -136,8 +174,10 @@ struct Brick {
 
   size_t GetLength(const Config &config) const {
     if (orientation == BrickOrientation::HEADER) {
-      return (brickType == BrickType::FULL) ? config.fullBrickDimension.width
-                                            : config.halfBrickDimension.width;
+      return (brickType == BrickType::FULL)
+                 ? config.fullBrickDimension.width
+                 : ((config.fullBrickDimension.width - config.jointSize.head) *
+                    0.5);
     } else if (orientation == BrickOrientation::STRETCHER) {
       return (brickType == BrickType::FULL) ? config.fullBrickDimension.length
                                             : config.halfBrickDimension.length;
