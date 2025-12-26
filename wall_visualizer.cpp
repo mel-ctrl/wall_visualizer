@@ -77,7 +77,7 @@ void WallVisualizer::CreateLayout(BondType bond_type) {
     CreateStretcherLayout();
     break;
   case BondType::ENGLISH_CROSS_BOND:
-    // CreateEnglishCrossBondLayout();
+    CreateEnglishCrossBondLayout();
     break;
   default:
     throw std::runtime_error("Bond type not implemented");
@@ -137,26 +137,73 @@ void WallVisualizer::CreateStretcherLayout() {
 
     mWall.push_back(std::move(course));
   }
-
-  std::cout << "\n=== BRICK LAYOUT DEBUG ===" << std::endl;
-  for (size_t rowIdx = 0; rowIdx < std::min(size_t(2), mWall.size());
-       ++rowIdx) {
-    std::cout << "Row " << rowIdx << ":" << std::endl;
-    for (const auto &brick : mWall[rowIdx]) {
-      int brickEnd =
-          brick.position.x + ((brick.brickType == BrickType::FULL)
-                                  ? mConfig.fullBrickDimension.length
-                                  : mConfig.halfBrickDimension.length);
-      std::cout << "  Col " << brick.coordinate.column << ": x=["
-                << brick.position.x << ", " << brickEnd << "]"
-                << ", type="
-                << (brick.brickType == BrickType::FULL ? "FULL" : "HALF")
-                << ", index=" << brick.index << std::endl;
-    }
-  }
 }
 
-void CreateEnglishCrossBondLayout() {}
+void WallVisualizer::CreateEnglishCrossBondLayout() {
+  mWall.clear();
+  mTotalBricks = 0;
+  mTotalWallArea = 0;
+  auto nr_of_courses = mConfig.wall.height / mConfig.courseHeight;
+
+  for (size_t row = 0; row < nr_of_courses; ++row) {
+    std::vector<Brick> course;
+    size_t currentWidth = 0;
+    size_t column = 0;
+
+    if (row % 2 == 0) {
+      if ((row / 2) % 2 == 1) {
+        currentWidth +=
+            AddBrickToLayout(course, BrickType::HALF, row, column, currentWidth,
+                             BrickOrientation::STRETCHER);
+        column++;
+      }
+
+      while (currentWidth + mConfig.fullBrickDimension.length <=
+             mConfig.wall.length) {
+        currentWidth +=
+            AddBrickToLayout(course, BrickType::FULL, row, column, currentWidth,
+                             BrickOrientation::STRETCHER);
+        column++;
+      }
+
+      if (currentWidth + mConfig.halfBrickDimension.length <=
+          mConfig.wall.length) {
+        currentWidth +=
+            AddBrickToLayout(course, BrickType::HALF, row, column, currentWidth,
+                             BrickOrientation::STRETCHER);
+        column++;
+      }
+
+    } else {
+      size_t stretcher_width =
+          mWall[0].back().position.x + mWall[0].back().GetLength(mConfig);
+
+      currentWidth += AddBrickToLayout(course, BrickType::HALF, row, column,
+                                       currentWidth, BrickOrientation::HEADER);
+      column++;
+
+      while (currentWidth + mConfig.fullBrickDimension.width <=
+             stretcher_width) {
+        currentWidth +=
+            AddBrickToLayout(course, BrickType::FULL, row, column, currentWidth,
+                             BrickOrientation::HEADER);
+        column++;
+      }
+
+      if (currentWidth +
+              ((mConfig.fullBrickDimension.width - mConfig.jointSize.head) /
+               2) <=
+          stretcher_width) {
+        currentWidth +=
+            AddBrickToLayout(course, BrickType::HALF, row, column, currentWidth,
+                             BrickOrientation::HEADER);
+        column++;
+      }
+    }
+
+    mWall.push_back(std::move(course));
+  }
+}
 
 bool WallVisualizer::OptimizeBuildOrder() {
   std::cout << "Total robot positions: " << mAllRobotPositions.size()
@@ -462,18 +509,32 @@ void WallVisualizer::Visualize(
       std::string strideColor = color_codes::GetStrideColor(strideId);
 
       if (built_bricks.count(brick.coordinate)) {
-        if (brick.orientation != BrickOrientation::HEADER &&
-            brick.brickType == BrickType::FULL) {
-          line += strideColor + "▓▓▓▓ " + color_codes::RESET;
+        if (brick.orientation == BrickOrientation::HEADER) {
+          if (brick.brickType == BrickType::HALF) {
+            line += strideColor + "▓|" + color_codes::RESET;
+          } else {
+            line += strideColor + "▓▓|" + color_codes::RESET;
+          }
         } else {
-          line += strideColor + "▓▓ " + color_codes::RESET;
+          if (brick.brickType == BrickType::FULL) {
+            line += strideColor + "▓▓▓▓▓|" + color_codes::RESET;
+          } else {
+            line += strideColor + "▓▓▓|" + color_codes::RESET;
+          }
         }
       } else {
-        if (brick.orientation != BrickOrientation::HEADER &&
-            brick.brickType == BrickType::FULL) {
-          line += color_codes::GRAY + "░░░░ " + color_codes::RESET;
+        if (brick.orientation == BrickOrientation::HEADER) {
+          if (brick.brickType == BrickType::HALF) {
+            line += color_codes::GRAY + "░|" + color_codes::RESET;
+          } else {
+            line += color_codes::GRAY + "░░|" + color_codes::RESET;
+          }
         } else {
-          line += color_codes::GRAY + "░░ " + color_codes::RESET;
+          if (brick.brickType == BrickType::FULL) {
+            line += color_codes::GRAY + "░░░░░|" + color_codes::RESET;
+          } else {
+            line += color_codes::GRAY + "░░░|" + color_codes::RESET;
+          }
         }
       }
     }
@@ -537,7 +598,8 @@ void WallVisualizer::ReconstructPath(
 }
 
 void WallVisualizer::RunInteractiveBuild(BondType bond_type) {
-  std::cout << "Visualizing for bond type STRETCHER" << std::endl;
+  std::cout << "Visualizing for bond type: " << BondTypeToString(bond_type)
+            << std::endl;
 
   CreateLayout(bond_type);
   PrecomputeSupportDependencies();
