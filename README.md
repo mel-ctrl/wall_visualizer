@@ -30,7 +30,7 @@ This parameter is used for the horizontal positions pruning strategy.
 
 # How to run
 ## 1. Cloning the repo
-`git@github.com:mel-ctrl/wall_visualizer.git`
+`git clone git@github.com:mel-ctrl/wall_visualizer.git`
 
 ## 2. Building the Program
 
