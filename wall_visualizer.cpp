@@ -85,14 +85,14 @@ void WallVisualizer::CreateLayout(BondType bond_type) {
 }
 
 size_t WallVisualizer::AddBrickToLayout(std::vector<Brick> &course,
-                                        BrickType brickType, size_t row,
+                                        BrickType brick_type, size_t row,
                                         size_t column, size_t x_pos,
                                         BrickOrientation orientation) {
   Coordinate coordinate(row, column);
   Position position(x_pos, row * mConfig.courseHeight);
 
   Brick brick =
-      Brick(coordinate, position, brickType, orientation, 0, mTotalBricks);
+      Brick(coordinate, position, brick_type, orientation, 0, mTotalBricks);
 
   mTotalWallArea += brick.GetArea(mConfig);
   course.push_back(brick);
