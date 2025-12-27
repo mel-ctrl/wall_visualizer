@@ -1,19 +1,19 @@
 # Wall Visualizer
 ## Overview
 
-This C++ program optimizes the build sequence for a robotic brick-laying system. It uses A* pathfinding to determine the optimal order and robot positions for placing bricks while respecting structural constraints; bricks must be fully supported from below.
+This C++ program optimizes the build sequence for a brick-laying robot. It uses A* pathfinding to determine the optimal order and robot positions for placing bricks while respecting structural constraints; bricks must be fully supported from below.
 
-A movement has cost 1 and placing a brick from current position has cost 0. With A* this unfolds to greedy brick placement and finding a path where you maximize amount of bricks you place while minimizing robot movements. This is because A* selects the path that minimizes: $$f(n) = g(n) + h(n)$$ It tries to greedily reduce total cost $f(n)$, so building as many bricks from current position ($g(n) = 0$ for placing) + a heuristic $h(n)$; a lower bound for the estimation of total cost remaining. So it prioritizes visiting states that are not increasing the total cost. A very low bound for the heuristic would be area to build / envelope area. 
+A movement has cost 1 and placing a brick from current position has cost 0. With A* this unfolds to greedy brick placement and finding a path where you maximize amount of bricks you place while minimizing robot movements. This is because A* selects the path that minimizes: $$f(n) = g(n) + h(n)$$ It tries to reduce total cost $f(n)$. Building bricks from current position has $g(n) = 0$ + a heuristic $h(n)$; a lower bound for the estimation of total cost remaining. A very low bound for the heuristic would be remaining area to build divided by envelope area, which is admissible. The heuristic $h(n)$ is constant for each state with an added brick for walls consisting of same type bricks. It does not matter if you place a brick at position A or position B, heuristic is the same if the added brick is same size.
+Moving to a different robot position increases cost since $g(n) = 1$, $h(n)$ does not change since the wall state does not change.
 
-The heuristic $h(n)$ is constant for each state with an added brick in the middle of the wall (does not matter if you place a brick at position A or position B, heuristic is the same if the added brick
-is same size which is the case for the middle part of a wall with a brick pattern of same sized bricks). Since there were too many states (a state consists of robot position and wall state) with equally good estimated remaining costs, keeping it pure A* would take too much time to run the program. Especially for wide walls it would take too long since in the height you can remove lots of positions where you can not build any brick because there is no support yet.
+Since there were too many states (a state consists of robot position and wall state) with equally good estimated remaining costs $h(n)$, keeping it pure A* would take too much time to run the program. In the height you can remove lots of positions where you can not build any brick because there is no support yet, but in width this is not possible so with wider walls there are more horizontal robot positions to consider.
 
-That is why I made the code such that brick placement is always greedy. A* tries to find the path which will maximize the most bricks built in least movements as possible. The robot positions are pruned to speed things up.
+That is why I made the code such that brick placement is always greedy. A* tries to find the path which will maximize the most bricks built in least movements as possible. The robot positions are pruned to speed things up. Vertical positions that can not build anything due to lack of support are dismissed and horizontal positions are pruned with the parameter `top_x_brick_count_to_keep`:
 
 #### Key Parameter
 
 ##### `top_x_brick_count_to_keep`
-This parameter is used for the pruning strategy. 
+This parameter is used for the horizontal positions pruning strategy. 
 **What it does:** Keeps only robot positions that can place the top X distinct brick counts.
 **Example:** `top_x_brick_count_to_keep = 3`
   - Position A can place 10 bricks (most)
@@ -35,8 +35,8 @@ This parameter is used for the pruning strategy.
 ## 2. Building the Program
 
 ### Prerequisites
-- C++20 compatible compiler (GCC 10+ or Clang 10+)
-- CMake 3.15 or higher
+- C++20 compatible compiler (GCC 13+ or Clang 17+)
+- CMake 3.20 or higher
 
 ### Build with CMake (Recommended)
 Go to the cloned folder. Run from command line: 
@@ -45,6 +45,21 @@ mkdir build
 cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build .
+```
+
+### Build with Clang (Manual)
+```bash
+mkdir build
+cd build
+clang++ -std=c++20 -O3 -DNDEBUG -I../lib ../wall_visualizer.cpp ../main.cpp -o wall_visualizer
+```
+
+
+### Build with GCC (Manual)
+```bash
+mkdir build
+cd build
+g++ -std=c++20 -O3 -DNDEBUG -I../lib ../wall_visualizer.cpp ../main.cpp -o wall_visualizer
 ```
 
 ## 3. Running the program
@@ -58,7 +73,7 @@ From within the build folder use:
 ```
 
 ### Config file
-The program requires a TOML configuration file specifying wall dimensions, brick sizes, robot envelope, and optimization parameters.
+The program requires a TOML configuration file specifying wall dimensions, brick sizes, robot envelope, and optimization parameters. This is already included in the repository, you do not have to change it but you can play with the values.
 
 #### Configuration File Format
 ```toml
@@ -88,3 +103,16 @@ length_mm = 800
 height_mm = 1300
 
 ```
+
+## Interactive Build Mode
+
+After optimization completes, the program enters interactive mode:
+
+![Wall visualization](example.png)
+
+- **ENTER**: Place the brick and visualize progress
+- **q**: Quit the simulation
+
+The visualization uses colored blocks to show:
+- **Colored blocks (▓)**: Placed bricks (color indicates stride)
+- **Gray blocks (░)**: Unplaced bricks

@@ -219,7 +219,7 @@ bool WallVisualizer::OptimizeBuildOrder() {
       priority_queue;
 
   std::unordered_map<State, double, StateHash> g_scores;
-  g_scores.reserve(10 * 1024);
+  g_scores.reserve(100 * 1024);
 
   size_t start_bitset_idx = GetOrCreateBitsetIndex(std::bitset<MAX_BRICKS>());
 
@@ -263,7 +263,6 @@ bool WallVisualizer::OptimizeBuildOrder() {
     if (current_node.state.nrOfPlacedBricks == mTotalBricks) {
       ReconstructPath(came_from, current_node.state);
       std::cout << "\nOptimal solution found!" << std::endl;
-      std::cout << "  Total cost: " << current_node.cost << std::endl;
       std::cout << "  Total strides: " << current_node.currentStrideId
                 << std::endl;
       std::cout << "  Nodes explored: " << nodes_explored << std::endl;
