@@ -223,8 +223,8 @@ struct StateHash {
 };
 
 struct Node {
-  double cost = 0;
-  double estimatedTotalCost = 0; // f(n) = g(n) + h(n)
+  double cost = 0;               // g(n)
+  double estimatedTotalCost = 0; // f(n)
   State state;
   size_t currentStrideId = 0;
 
@@ -287,15 +287,15 @@ private:
       return it->second;
     }
 
-    size_t newIndex = mBitsetTable.size();
+    size_t new_index = mBitsetTable.size();
     mBitsetTable.push_back(bitset);
-    mBitsetToIndex[bitset] = newIndex;
-    return newIndex;
+    mBitsetToIndex[bitset] = new_index;
+    return new_index;
   }
 
   Config LoadConfig(const std::string &file_name);
   bool OptimizeBuildOrder();
-  size_t AddBrickToLayout(std::vector<Brick> &course, BrickType brickType,
+  size_t AddBrickToLayout(std::vector<Brick> &course, BrickType brick_type,
                           size_t row, size_t column, size_t x_pos,
                           BrickOrientation orientation);
   void CreateLayout(BondType bond_type);
