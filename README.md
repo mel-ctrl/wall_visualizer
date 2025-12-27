@@ -44,7 +44,7 @@ Keeps only robot positions that can place the top X distinct brick counts.
 - CMake 3.20 or higher
 
 ### Build with CMake (Recommended)
-Go to the cloned folder. Run from command line: 
+From the command line go to the cloned folder and run: 
 ```bash
 mkdir build
 cd build
