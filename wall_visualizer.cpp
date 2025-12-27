@@ -262,8 +262,6 @@ bool WallVisualizer::OptimizeBuildOrder() {
     // Goal check
     if (current_node.state.nrOfPlacedBricks == mTotalBricks) {
       ReconstructPath(came_from, current_node.state);
-      std::cout << "h(G): " << CalculateHeuristic(current_node.state)
-                << std::endl;
       std::cout << "\nOptimal solution found!" << std::endl;
       std::cout << "  Total cost: " << current_node.cost << std::endl;
       std::cout << "  Total strides: " << current_node.currentStrideId
@@ -356,7 +354,6 @@ State WallVisualizer::CreateBrickPlacementState(const State &state) {
         continue;
       }
 
-      // Check support
       if (!IsBrickFullySupported(brick, new_placed_bricks)) {
         continue;
       }
