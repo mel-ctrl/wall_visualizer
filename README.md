@@ -1,7 +1,7 @@
 # Wall Visualizer
 ## Overview
 
-This program optimizes the build sequence for a robotic brick-laying system. It uses A* pathfinding to determine the optimal order and robot positions for placing bricks while respecting structural constraints; bricks must be fully supported from below.
+This C++ program optimizes the build sequence for a robotic brick-laying system. It uses A* pathfinding to determine the optimal order and robot positions for placing bricks while respecting structural constraints; bricks must be fully supported from below.
 
 A movement has cost 1 and placing a brick from current position has cost 0. With A* this unfolds to greedy brick placement and finding a path where you maximize amount of bricks you place while minimizing robot movements. This is because A* selects the path that minimizes: $$f(n) = g(n) + h(n)$$ It tries to greedily reduce total cost $f(n)$, so building as many bricks from current position ($g(n) = 0$ for placing) + a heuristic $h(n)$; a lower bound for the estimation of total cost remaining. So it prioritizes visiting states that are not increasing the total cost. A very low bound for the heuristic would be area to build / envelope area. 
 
