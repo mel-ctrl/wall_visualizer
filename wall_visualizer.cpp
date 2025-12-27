@@ -147,30 +147,30 @@ void WallVisualizer::CreateEnglishCrossBondLayout() {
 
   for (size_t row = 0; row < nr_of_courses; ++row) {
     std::vector<Brick> course;
-    size_t currentWidth = 0;
+    size_t current_width = 0;
     size_t column = 0;
 
     if (row % 2 == 0) {
       if ((row / 2) % 2 == 1) {
-        currentWidth +=
-            AddBrickToLayout(course, BrickType::HALF, row, column, currentWidth,
-                             BrickOrientation::STRETCHER);
+        current_width +=
+            AddBrickToLayout(course, BrickType::HALF, row, column,
+                             current_width, BrickOrientation::STRETCHER);
         column++;
       }
 
-      while (currentWidth + mConfig.fullBrickDimension.length <=
+      while (current_width + mConfig.fullBrickDimension.length <=
              mConfig.wall.length) {
-        currentWidth +=
-            AddBrickToLayout(course, BrickType::FULL, row, column, currentWidth,
-                             BrickOrientation::STRETCHER);
+        current_width +=
+            AddBrickToLayout(course, BrickType::FULL, row, column,
+                             current_width, BrickOrientation::STRETCHER);
         column++;
       }
 
-      if (currentWidth + mConfig.halfBrickDimension.length <=
+      if (current_width + mConfig.halfBrickDimension.length <=
           mConfig.wall.length) {
-        currentWidth +=
-            AddBrickToLayout(course, BrickType::HALF, row, column, currentWidth,
-                             BrickOrientation::STRETCHER);
+        current_width +=
+            AddBrickToLayout(course, BrickType::HALF, row, column,
+                             current_width, BrickOrientation::STRETCHER);
         column++;
       }
 
@@ -178,25 +178,27 @@ void WallVisualizer::CreateEnglishCrossBondLayout() {
       size_t stretcher_width =
           mWall[0].back().position.x + mWall[0].back().GetLength(mConfig);
 
-      currentWidth += AddBrickToLayout(course, BrickType::HALF, row, column,
-                                       currentWidth, BrickOrientation::HEADER);
+      current_width +=
+          AddBrickToLayout(course, BrickType::HALF, row, column, current_width,
+                           BrickOrientation::HEADER);
       column++;
 
-      while (currentWidth + mConfig.fullBrickDimension.width <=
+      while (current_width + mConfig.fullBrickDimension.width <=
              stretcher_width) {
-        currentWidth +=
-            AddBrickToLayout(course, BrickType::FULL, row, column, currentWidth,
-                             BrickOrientation::HEADER);
+        current_width +=
+            AddBrickToLayout(course, BrickType::FULL, row, column,
+                             current_width, BrickOrientation::HEADER);
         column++;
       }
 
-      if (currentWidth +
-              ((mConfig.fullBrickDimension.width - mConfig.jointSize.head) /
-               2) <=
+      if (current_width +
+              (static_cast<size_t>(
+                  (mConfig.fullBrickDimension.width - mConfig.jointSize.head) *
+                  0.5)) <=
           stretcher_width) {
-        currentWidth +=
-            AddBrickToLayout(course, BrickType::HALF, row, column, currentWidth,
-                             BrickOrientation::HEADER);
+        current_width +=
+            AddBrickToLayout(course, BrickType::HALF, row, column,
+                             current_width, BrickOrientation::HEADER);
         column++;
       }
     }
