@@ -440,8 +440,8 @@ bool WallVisualizer::IsBrickFullySupported(
     return true;
   }
 
-  for (auto reqBrickIndex : brick.requiredSupportIndices) {
-    if (!placed_bricks_bitset.test(reqBrickIndex)) {
+  for (const auto req_brick_index : brick.requiredSupportIndices) {
+    if (!placed_bricks_bitset.test(req_brick_index)) {
       return false;
     }
   }
