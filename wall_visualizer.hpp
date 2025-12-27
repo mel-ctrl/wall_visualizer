@@ -104,12 +104,6 @@ struct Coordinate {
   bool operator!=(const Coordinate &other) const { return !(*this == other); }
 };
 
-struct PositionHash {
-  std::size_t operator()(const Position &p) const {
-    return std::hash<int>()(p.x) ^ (std::hash<int>()(p.y) << 1);
-  }
-};
-
 struct CoordinateHash {
   std::size_t operator()(const Coordinate &c) const {
     return std::hash<int>()(c.row) ^ (std::hash<int>()(c.column) << 1);
