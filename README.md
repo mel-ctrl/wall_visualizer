@@ -16,8 +16,11 @@ That is why I made the code such that brick placement is always greedy. A* tries
 
 ##### `top_x_brick_count_to_keep`
 This parameter is used for the horizontal positions pruning strategy. 
-**What it does:** Keeps only robot positions that can place the top X distinct brick counts.
-**Example:** `top_x_brick_count_to_keep = 3`
+**What it does:** 
+Keeps only robot positions that can place the top X distinct brick counts.
+
+**Example:** 
+`top_x_brick_count_to_keep = 3`
   - Position A can place 10 bricks (most)
   - Position B can place 10 bricks (most) 
   - Position C can place 8 bricks (second most)
